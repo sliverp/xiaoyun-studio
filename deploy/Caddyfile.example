@@ -1,0 +1,4 @@
+# Replace studio.example.com with your own domain and point DNS to your server.
+studio.example.com {
+    reverse_proxy 127.0.0.1:18080
+}

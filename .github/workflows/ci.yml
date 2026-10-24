@@ -1,0 +1,42 @@
+name: Validate standalone studio
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+
+  linux-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image with Chromium, FFmpeg and CJK fonts
+        run: docker build --tag xiaoyun-studio:ci .
+      - name: Verify real headless video, local RTMP, audio, PDF and shared application controls
+        shell: bash
+        run: |
+          set -o pipefail
+          docker run --rm --network none --shm-size=1g xiaoyun-studio:ci node scripts/media-smoke.mjs | tee media-smoke.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-media-verification
+          path: media-smoke.json
+          if-no-files-found: ignore

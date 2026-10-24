@@ -1,0 +1,32 @@
+Gymnopédie No.1
+Composer: Erik Satie
+Recording author: Teknopazzo
+Source: https://commons.wikimedia.org/wiki/File:Gymnopedie_No._1..ogg
+Original recording: https://upload.wikimedia.org/wikipedia/commons/b/b7/Gymnopedie_No._1..ogg
+License: CC0 1.0 Universal Public Domain Dedication
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Deployment processing: loudness normalization, bass/treble filtering, brief entrance and ending fades, MP3 transcoding. See manifest.json for exact processing and checksum.
+
+Raspberry Jam
+Author: congusbongus
+Source: https://opengameart.org/content/raspberry-jam
+Original audio: https://opengameart.org/sites/default/files/raspberry_jam.ogg
+License: CC0 1.0 Universal
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Processing: High-pass 40 Hz; loudness normalization -19 LUFS, -3 dBTP, LRA 9; stereo 44.1 kHz 160 kbps MP3
+
+Upbeat Loop
+Author: BenjaTheMaker
+Source: https://opengameart.org/content/upbeat-short-music-loop-vorbis-oog
+Original audio: https://opengameart.org/sites/default/files/Upbeat%20Loop_2.ogg
+License: CC0 1.0 Universal
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Processing: High-pass 40 Hz; loudness normalization -19 LUFS, -3 dBTP, LRA 9; stereo 44.1 kHz 160 kbps MP3
+
+Dance Field
+Author: Centurion_of_war
+Source: https://opengameart.org/content/dance-field
+Original audio: https://opengameart.org/sites/default/files/dance_field_2_1.mp3
+License: CC0 1.0 Universal
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Processing: High-pass 40 Hz; loudness normalization -19 LUFS, -3 dBTP, LRA 9; stereo 44.1 kHz 160 kbps MP3

@@ -1,0 +1,24 @@
+{
+  "name": "xiaoyun-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent AI virtual-presenter studio with headless rendering and RTMP output",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/main.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "test:media": "node scripts/media-smoke.mjs",
+    "migrate": "node scripts/migrate.mjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "pdfjs-dist": "^6.4.299",
+    "puppeteer-core": "^24.37.5",
+    "tencentcloud-sdk-nodejs-tts": "^4.1.180",
+    "ws": "^8.18.3"
+  }
+}
