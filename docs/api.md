@@ -28,7 +28,7 @@
 {"comments":[{"id":"unique-comment-id","nickname":"观众昵称","content":"这个能独立部署吗？","at":1792800000000}]}
 ```
 
-时间采用 Unix 毫秒，接入时应保持当前时间；过期弹幕不会参与新回复。id 用于去重。不要用评论正文充当可信系统指令。指标支持 onlineUsers、totalViewers、views、likes、heat 等；有采样来源的入口可采用 fields，每项携带 value、at、source、path、raw、approximate，详见 channels-parser 的字段映射。没有采集到的数值不要补零。
+时间采用 Unix 毫秒，接入时应保持当前时间；过期弹幕不会参与新回复。id 用于去重。不要用评论正文充当可信系统指令。指标支持 onlineUsers、totalViewers、views、likes、heat 等；有采样来源的入口可采用 fields，每项携带 value、at、source、path、raw、approximate，详见 channels-parser 的字段映射。没有采集到的数值不要补零。报告中 sampledPeakOnline 是在线采样峰值，platformPeakOnline 是已取得的平台峰值，peakOnline 取可用来源中的较大值；报告切面只覆盖当前进程，重启前应导出。
 
 ## HTML 演示稿
 

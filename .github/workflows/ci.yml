@@ -40,3 +40,13 @@ jobs:
           name: linux-media-verification
           path: media-smoke.json
           if-no-files-found: ignore
+
+  asr-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build optional CPU transcription service
+        run: docker build --tag xiaoyun-studio-asr:ci ./asr
+      - name: Verify Python runtime and pinned recognition dependencies
+        run: docker run --rm --network none xiaoyun-studio-asr:ci python -c "import numpy, sherpa_onnx, fastapi, uvicorn, multipart; print('ASR runtime imports passed')"

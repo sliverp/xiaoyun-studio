@@ -257,3 +257,13 @@ test('a stalled goodbye recovers the goodbye intent without reopening the lectur
  assert.equal(f.media.active.text,f.config.identity.goodbye);assert.equal(f.director.closing,true);assert.equal(f.director.opening,false)
  await f.complete();assert.equal(f.director.running,false);assert.equal(f.director.wanted,false)
 })
+
+test('reports distinguish sampled online peak from an observed platform historical peak',async t=>{
+ const f=await fixture(t)
+ f.director.ingestMetrics({onlineUsers:12,peakOnlineUsers:34})
+ f.advance(1000);f.director.ingestMetrics({onlineUsers:8})
+ const summary=f.director.report('json').summary
+ assert.equal(summary.sampledPeakOnline,12);assert.equal(summary.platformPeakOnline,34);assert.equal(summary.peakOnline,34)
+ const markdown=f.director.report('md')
+ assert.match(markdown,/最高在线：34（已采集来源的较大值）/);assert.match(markdown,/采样最高在线：12/);assert.match(markdown,/平台报告最高在线：34/)
+})

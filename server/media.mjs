@@ -45,7 +45,7 @@ export class MediaEngine {
   constructor({dataDir,baseUrl,renderToken,getSettings,onStatus=()=>{},onMeter=()=>{},onFrame=()=>{},onAudio=()=>{}}){
     Object.assign(this,{dataDir,baseUrl,renderToken,getSettings,onStatus,onMeter,onFrame,onAudio})
     this.networkPolicy=createPresentationNetworkPolicy(baseUrl)
-    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.output=null;this.outputWanted=false;this.outputGeneration=0;this.reconnectTimer=null;this.lastOutput={active:false,mode:null,state:'stopped',error:'',seconds:0,recording:false,recordingFile:null};this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0};this.reconnects=0
+    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.output=null;this.outputWanted=false;this.outputGeneration=0;this.reconnectTimer=null;this.lastOutput={active:false,mode:null,state:'stopped',error:'',seconds:0,recording:false,recordingFile:null};this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0};this.reconnects=0
     mkdirSync(dataDir,{recursive:true})
     if(this.tools.ffmpeg.available)this.mixer=new AudioMixer({ffmpeg:this.tools.ffmpeg.path,onPcm:buffer=>this.writePcm(buffer),canOutput:()=>!this.output?.audioBlocked,onMeter:meter=>{this.meter=meter;this.onMeter(meter)}})
   }
@@ -65,7 +65,7 @@ export class MediaEngine {
     const args=['--autoplay-policy=no-user-gesture-required','--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows','--mute-audio']
     if(process.env.CHROMIUM_NO_SANDBOX==='1'||process.getuid?.()===0)args.push('--no-sandbox')
     try{
-      this.browser=await puppeteer.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
+      this.browser=await puppeteer.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,protocolTimeout:30000,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
       if(this.closed){await this.browser.close();this.browser=null;throw new DOMException('渲染启动已取消','AbortError')}
       const owned=this.browser
       owned.once('disconnected',()=>{
@@ -102,13 +102,40 @@ export class MediaEngine {
     this.captureTimer=setInterval(()=>this.capture().catch(error=>{this.lastError=redactMediaError(error.message,[this.renderToken]);this.emit()}),1000/fps)
   }
   async capture(){
-    if(this.closed||!this.programPage||this.capturing)return
+    if(this.closed||!this.programPage||this.capturing||this.deckBusy)return
     this.capturing=true
     try{
-      this.frame=Buffer.from(await this.programPage.screenshot({type:'jpeg',quality:82,optimizeForSpeed:true}))
+      this.frame=Buffer.from(await this.snapshotPage(this.programPage,{type:'jpeg',quality:82,optimizeForSpeed:true}))
       this.onFrame(this.frame);this.captureCount++
       const now=performance.now();if(now-this.lastCaptureReport>=2000){this.captureFps=Math.round(this.captureCount*10000/(now-this.lastCaptureReport))/10;this.captureCount=0;this.lastCaptureReport=now;this.emit()}
     }finally{this.capturing=false}
+  }
+  /** Keep tab activation and screenshots sequential; a stuck capture restarts only the owned browser. */
+  snapshotPage(page,options){
+    const owned=this.browser
+    const task=this.screenshotTail.then(async()=>{
+      if(this.closed||!owned||owned!==this.browser||page.isClosed())throw new DOMException('渲染页面已关闭','AbortError')
+      let timer
+      const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('后台画面截图超过10秒，正在恢复渲染浏览器'),{code:'RENDER_TIMEOUT'})),10000)})
+      try{
+        return await Promise.race([(async()=>{await page.bringToFront();return page.screenshot(options)})(),deadline])
+      }catch(error){
+        if(error.code==='RENDER_TIMEOUT'&&this.browser===owned&&!this.closed){this.lastError=error.message;owned.process()?.kill('SIGKILL')}
+        throw error
+      }finally{clearTimeout(timer)}
+    })
+    this.screenshotTail=task.then(()=>{},()=>{})
+    return task
+  }
+  /** Let asynchronous deck rendering finish in its active tab while the encoder repeats the last frame. */
+  withDeck(operation){
+    const task=this.deckTail.then(async()=>{
+      if(this.closed)throw new DOMException('渲染引擎已关闭','AbortError')
+      this.deckBusy=true
+      try{await this.screenshotTail;return await operation()}finally{this.deckBusy=false}
+    })
+    this.deckTail=task.then(()=>{},()=>{})
+    return task
   }
   getFrame(){return this.frame}
   getSlideFrame(){return this.slideFrame}
@@ -130,12 +157,16 @@ export class MediaEngine {
     return url
   }
   async openPresentation(url){
-    await this.initialize();let target=this.presentationUrl(url);await this.networkPolicy(target.href)
+    await this.initialize();return this.withDeck(()=>this.openDeck(url))
+  }
+  async openDeck(url){
+    let target=this.presentationUrl(url);await this.networkPolicy(target.href)
     const original=target
     if(original.origin===new URL(this.baseUrl).origin&&original.pathname.startsWith('/assets/')&&/\.pdf$/i.test(original.pathname)){
       target=new URL('/pdf-viewer',this.baseUrl);target.searchParams.set('file',original.href)
     }
     if(!this.deckPage||this.deckPage.isClosed()){this.deckPage=await this.browser.newPage();await this.authenticateLocalRequests(this.deckPage)}
+    await this.deckPage.bringToFront()
     await this.deckPage.setViewport({width:1280,height:720,deviceScaleFactor:1});await this.deckPage.setBypassServiceWorker(true);await this.deckPage.setCacheEnabled(false)
     await this.deckPage.goto(target.href,{waitUntil:'domcontentloaded',timeout:30000})
     await this.deckPage.evaluate(()=>document.fonts.ready)
@@ -144,10 +175,12 @@ export class MediaEngine {
       await this.deckPage.evaluate(async()=>{if(window.studioPdfReady)await window.studioPdfReady;if(window.studioPdfError)throw new Error(window.studioPdfError)})
     }
     await sleep(150);this.deckLastUrl=this.deckPage.url()
-    return this.captureSlide()
+    return this.readDeck()
   }
-  async captureSlide(){
+  captureSlide(){return this.withDeck(()=>this.readDeck())}
+  async readDeck(){
     if(!this.deckPage||this.deckPage.isClosed())return {...this.slide}
+    await this.deckPage.bringToFront()
     const state=await this.deckPage.evaluate(()=>{
       const root=['.reveal .slides section.present','.remark-visible .remark-slide-content','.slide.active','[data-slide].active','[aria-current="step"]'].map(selector=>document.querySelector(selector)).find(Boolean)||document.body
       const numbered=document.querySelector('[data-slide-count]'),counter=document.querySelector('#counter'),all=[...document.querySelectorAll('.slide')]
@@ -162,7 +195,7 @@ export class MediaEngine {
       const identity=new URL(location.href);identity.hash='';identity.searchParams.delete('renderToken');identity.searchParams.delete('page')
       return {pageNumber,pageCount,title:document.title.slice(0,300),text,notes:(root.querySelector('.dsh-speaker-notes')?.textContent||'').trim().slice(0,6000),pageKey:identity.href+'|'+pageNumber}
     })
-    this.slideFrame=Buffer.from(await this.deckPage.screenshot({type:'jpeg',quality:88,optimizeForSpeed:true}))
+    this.slideFrame=Buffer.from(await this.snapshotPage(this.deckPage,{type:'jpeg',quality:88,optimizeForSpeed:true}))
     const hash=createHash('sha256').update(this.slideFrame).digest('hex')
     if(hash!==this.lastSlideHash){this.slide={...state,revision:this.slide.revision+1};this.lastSlideHash=hash}else this.slide={...this.slide,...state}
     this.deckLastUrl=this.deckPage.url();this.emit();return {...this.slide}
@@ -175,8 +208,10 @@ export class MediaEngine {
       return current===target&&!window.studioPdfLoading
     },{timeout:10000},target)}catch{throw new Error('演示稿未确认目标页，请检查网页的翻页实现')}
   }
-  async restoreSlide(target){
+  restoreSlide(target){return this.withDeck(()=>this.restoreDeck(target))}
+  async restoreDeck(target){
     const current=this.slide.pageNumber
+    await this.deckPage.bringToFront()
     const handled=await this.deckPage.evaluate(async({target,current})=>{
       if(typeof window.studioDeck?.goToSlide==='function')return await window.studioDeck.goToSlide(target)!==false
       if(typeof window.dshLiveDeck?.goToSlide==='function')return await window.dshLiveDeck.goToSlide(target)!==false
@@ -188,11 +223,13 @@ export class MediaEngine {
       return false
     },{target,current})
     if(!handled)throw new Error('演示稿不支持恢复原页，请手动切换后继续')
-    await this.waitForSlide(target);return this.captureSlide()
+    await this.waitForSlide(target);return this.readDeck()
   }
-  async moveSlide(direction){
+  moveSlide(direction){return this.withDeck(()=>this.moveDeck(direction))}
+  async moveDeck(direction){
     if(!this.deckPage||this.deckPage.isClosed())throw new Error('请先打开演示稿')
     const before=this.slide.pageNumber
+    await this.deckPage.bringToFront()
     const handled=await this.deckPage.evaluate(async direction=>{
       if(direction==='first'){
         if(typeof window.studioDeck?.goToSlide==='function')return await window.studioDeck.goToSlide(1)!==false
@@ -214,7 +251,7 @@ export class MediaEngine {
       await this.waitForSlide(target)
     }
     await sleep(100)
-    const result=await this.captureSlide()
+    const result=await this.readDeck()
     if(direction==='next'&&before<this.slide.pageCount&&result.pageNumber===before)throw new Error('演示稿没有确认下一页，请使用支持翻页的 HTML 演示稿')
     if(direction==='first'&&result.pageNumber!==1)throw new Error('演示稿没有回到第一页')
     return result

@@ -496,10 +496,13 @@ export class LiveDirector {
 
   report(format = 'json') {
     const values = key => this.snapshots.map(row => row[key]).filter(Number.isFinite)
-    const online = values('onlineUsers'), heat = values('heat'), data = {
+    const online = values('onlineUsers'), platformOnline = values('peakOnlineUsers'), heat = values('heat')
+    const sampledPeakOnline=online.length?Math.max(...online):null,platformPeakOnline=platformOnline.length?Math.max(...platformOnline):null
+    const observedPeaks=[sampledPeakOnline,platformPeakOnline].filter(Number.isFinite)
+    const data = {
       generatedAt: new Date().toISOString(), timezone: 'Asia/Shanghai', sessionId: this.sessionId || null, startedAt: this.startedAt,
       durationSeconds: this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0,
-      summary: { peakOnline: online.length ? Math.max(...online) : null, peakHeat: heat.length ? Math.max(...heat) : null, latest: this.metrics, awards: this._prizeCount(), snapshotCount: this.snapshots.length, scope: '仅统计已采集的实际指标；未采集值为null，不推算完整平台观看人数。' },
+      summary: { peakOnline: observedPeaks.length?Math.max(...observedPeaks):null,sampledPeakOnline,platformPeakOnline,peakHeat: heat.length ? Math.max(...heat) : null, latest: this.metrics, awards: this._prizeCount(), snapshotCount: this.snapshots.length, scope: '仅统计已采集的实际指标；最高在线取采样在线峰值与已取得的平台峰值中较大值；未采集值为null，不推算完整平台观看人数。' },
       snapshots: clone(this.snapshots), lottery: clone(this.record.lotteryHistory), recentTransitions: this.history.slice(), limits: { snapshots: 50000, comments: 100, commentAgeSeconds: 120 },
     }
     if (format === 'json') return data
@@ -507,7 +510,7 @@ export class LiveDirector {
       const columns = ['at','pageNumber','stage','onlineUsers','peakOnlineUsers','heat','likes','totalViewers','views','totalViews','newFollowers','shares','groupJoins','giftCoins','durationSeconds']
       return '\uFEFF' + columns.join(',') + '\n' + this.snapshots.map(row => columns.map(key => { const value = row[key] == null ? '' : String(row[key]); return '"' + value.replaceAll('"', '""') + '"' }).join(',')).join('\n') + '\n'
     }
-    if (format === 'md') return `# 直播数据报告\n\n生成时间：${data.generatedAt}\n\n已记录时长：${data.durationSeconds} 秒\n\n最高在线：${data.summary.peakOnline ?? '未采集'}\n\n最高热度：${data.summary.peakHeat ?? '未采集'}\n\n指标切片：${data.summary.snapshotCount} 条\n\n已发奖品：${data.summary.awards} 份\n\n${data.summary.scope}\n`
+    if (format === 'md') return `# 直播数据报告\n\n生成时间：${data.generatedAt}\n\n已记录时长：${data.durationSeconds} 秒\n\n最高在线：${data.summary.peakOnline ?? '未采集'}（已采集来源的较大值）\n\n采样最高在线：${data.summary.sampledPeakOnline ?? '未采集'}\n\n平台报告最高在线：${data.summary.platformPeakOnline ?? '未采集'}\n\n最高热度：${data.summary.peakHeat ?? '未采集'}\n\n指标切片：${data.summary.snapshotCount} 条\n\n已发奖品：${data.summary.awards} 份\n\n${data.summary.scope}\n`
     throw new Error('导出格式仅支持json、csv、md')
   }
   async close() { clearInterval(this.supervisor); this.stop('服务退出，未自动开播'); await this.loopPromise?.catch(() => {}) }

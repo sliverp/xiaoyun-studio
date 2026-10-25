@@ -104,3 +104,38 @@ test('closing the engine cancels browser recovery before another browser can lau
  const recovery=engine.recoverBrowser();await engine.close();t.mock.timers.tick(10000);await recovery
  assert.equal(initialized,0);assert.equal(engine.status().browserRecovering,false)
 })
+
+test('a tab remains active until its screenshot completes before another tab can be activated',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-capture-order-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})
+ t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
+ engine.browser={async close(){}};const calls=[];let complete
+ const pending=new Promise(resolve=>{complete=resolve})
+ const page=(name,wait)=>({isClosed:()=>false,async bringToFront(){calls.push('activate '+name)},async screenshot(){calls.push('capture '+name);if(wait)await pending;calls.push('complete '+name);return Buffer.from(name)}})
+ const first=engine.snapshotPage(page('program',true),{}),second=engine.snapshotPage(page('slide',false),{})
+ await Promise.resolve();await Promise.resolve();assert.deepEqual(calls,['activate program','capture program'])
+ complete();await Promise.all([first,second]);assert.deepEqual(calls,['activate program','capture program','complete program','activate slide','capture slide','complete slide'])
+})
+
+test('a stuck screenshot has a deadline, keeps the last frame and terminates only its owned browser',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-capture-timeout-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})
+ t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
+ t.mock.timers.enable({apis:['setTimeout']});let kills=0
+ engine.browser={async close(){},process:()=>({kill(signal){assert.equal(signal,'SIGKILL');kills++}})};engine.frame=Buffer.from('last valid composite')
+ const page={isClosed:()=>false,async bringToFront(){},screenshot:()=>new Promise(()=>{})}
+ const pending=engine.snapshotPage(page,{}),rejection=assert.rejects(pending,/截图超过10秒/)
+ await Promise.resolve();await Promise.resolve();t.mock.timers.tick(10000);await rejection
+ assert.equal(kills,1);assert.equal(engine.frame.toString(),'last valid composite')
+})
+
+test('an asynchronous deck operation keeps focus until rendering finishes and serializes another controller',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-deck-focus-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})
+ t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
+ engine.browser={async close(){}};engine.programPage={viewport:()=>({width:640,height:360})};let captures=0,complete
+ engine.snapshotPage=async()=>{captures++;return Buffer.from('program')};const calls=[],pending=new Promise(resolve=>{complete=resolve})
+ const first=engine.withDeck(async()=>{calls.push('render first');await pending;calls.push('finish first')})
+ const second=engine.withDeck(async()=>{calls.push('render second')})
+ await Promise.resolve();await Promise.resolve();await engine.capture()
+ assert.equal(captures,0);assert.equal(engine.deckBusy,true);assert.deepEqual(calls,['render first'])
+ complete();await Promise.all([first,second]);assert.equal(engine.deckBusy,false);assert.deepEqual(calls,['render first','finish first','render second'])
+ await engine.capture();assert.equal(captures,1)
+})

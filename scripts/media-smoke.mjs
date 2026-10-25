@@ -20,8 +20,11 @@ async function run(name){
     return {...result,elapsedMs:Math.round(performance.now()-started)}
   }finally{clearTimeout(timeout);clearTimeout(force)}
 }
-const started=performance.now(),checks={}
-for(const name of ['engine-smoke','pdf-smoke','app-smoke'])checks[name]=await run(name)
-const result={passed:true,platform:process.platform,node:process.version,elapsedMs:Math.round(performance.now()-started),checks}
+const started=performance.now(),checks={};let failedCheck='',failure=''
+for(const name of ['engine-smoke','pdf-smoke','app-smoke']){
+ try{checks[name]=await run(name)}catch(error){failedCheck=name;failure=String(error.message);break}
+}
+const result={passed:!failure,platform:process.platform,node:process.version,elapsedMs:Math.round(performance.now()-started),checks,...(failure?{failedCheck,error:failure}:{})}
 if(process.env.STUDIO_SMOKE_REPORT)writeFileSync(process.env.STUDIO_SMOKE_REPORT,JSON.stringify(result,null,2)+'\n')
 console.log(JSON.stringify(result,null,2))
+if(failure){console.error(failure);process.exitCode=1}

@@ -27,6 +27,7 @@ const action=(name,cookie,data={})=>request('/api/action',cookie,{method:'POST',
 const state=cookie=>request('/api/state',cookie).then(r=>r.json())
 async function waitFor(read,predicate,message,timeout=15000){const until=Date.now()+timeout;while(Date.now()<until){const value=await read();if(predicate(value))return value;await delay(75)}throw new Error(message)}
 try{
+ console.error('app-smoke: two authenticated controllers and shared preview')
  const login=async()=>{const response=await request('/api/login',null,{method:'POST',value:{password:'Local-smoke-password-only-2026'}});return response.headers.get('set-cookie').split(';')[0]}
  const first=await login(),second=await login();assert.notEqual(first,second)
  await request('/api/config',first,{method:'PUT',value:{patch:{output:{width:640,height:360,fps:10,videoBitrate:800,audioBitrate:96,record:true,rtmpUrl:''},bgm:{asset:''},scene:{title:'小云 Studio · 实际集成验证'}}}})
@@ -49,11 +50,13 @@ try{
  for(let y=65;y<180;y++)for(let x=535;x<630;x++){const at=(y*640+x)*3,r=raw.stdout[at],g=raw.stdout[at+1],b=raw.stdout[at+2];pixels++;if(r<125&&g<125&&b<145)dark++;if(g>180&&g>r*1.3&&g>b*1.3)green++}
  assert.ok(dark>400,'the composited avatar region must contain actual character pixels, not only a blank card')
  assert.ok(green/pixels<.02,'the green background must be keyed out in the composed scene')
+ console.error('app-smoke: shared deck navigation')
  await action('presentation.next',second);assert.equal((await state(first)).media.slide.pageNumber,2)
  await action('presentation.first',first);assert.equal((await state(second)).media.slide.pageNumber,1)
  const wave=join(directory,'speech.wav'),generated=spawnSync(tools.ffmpeg.path,['-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=523.25:duration=2.2','-ar','48000','-ac','2',wave]);assert.equal(generated.status,0)
  const upload=await (await request('/api/upload',first,{method:'POST',headers:{'X-Filename':'smoke-speech.wav','X-Asset-Type':'audio','Content-Type':'audio/wav'},body:readFileSync(wave)})).json()
  await request('/api/config',first,{method:'PUT',value:{patch:{cues:[{id:'integration-cue',title:'本地验证录音',text:'这一段使用实际上传录音，验证服务端共享播放和录制。',audioUrl:upload.url}]}}})
+ console.error('app-smoke: actual cue, audio monitor and recording across controller logout')
  monitor=new WebSocket(app.baseUrl.replace('http:','ws:')+'/api/monitor',{headers:{Cookie:second}})
  monitor.on('message',(bytes,isBinary)=>{if(!isBinary)return;pcmBytes+=bytes.length;for(let at=0;at+1<bytes.length;at+=2){pcmPower+=(bytes.readInt16LE(at)/32768)**2;pcmSamples++}})
  await once(monitor,'open');await action('output.start',first);ownedEncoder=app.media.output.child
@@ -73,6 +76,7 @@ try{
  const recordingRms=Math.sqrt(energy/(decoded.stdout.length/2)),monitorRms=Math.sqrt(pcmPower/pcmSamples)
  assert.ok(recordingRms>.01&&monitorRms>.01&&pcmBytes>48000,'recording and authenticated operator monitoring must contain actual audio')
  assert.ok(sseCount>4,'the second controller must receive actual server events')
+ console.error('app-smoke: close application with controller events open')
  await cleanup();await events
  assert.ok(ownedBrowser.exitCode!==null||ownedBrowser.signalCode!==null);assert.ok(ownedEncoder.exitCode!==null||ownedEncoder.signalCode!==null);assert.equal(app.server.listening,false);assert.equal(app.media.mixer.closed,true)
  const result={passed:true,artifactDirectory:directory,twoControllerSessions:true,sharedSlideControls:true,sharedPauseResume:true,outputSurvivedControllerLogout:true,compositeAvatarPixels:dark,keyedGreenPixels:green,avatarRegionPixels:pixels,recordedBytes:statSync(recording).size,decodedRecordingRms:recordingRms,authenticatedMonitorPcmBytes:pcmBytes,monitorRms,cuePlaybackWithPauseMs:consumedMs,sseEvents:sseCount,ownedBrowserExited:true,ownedEncoderExited:true,audioMixerClosed:true,externalStreamingDestinationUsed:false}

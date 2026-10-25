@@ -23,9 +23,13 @@ await delay(400)
 const statuses=[],engine=new MediaEngine({dataDir:directory,baseUrl:'http://127.0.0.1:18359',renderToken:'local-smoke-token',getSettings:()=>({output:{width:640,height:360,fps:10}}),onStatus:s=>statuses.push(s)})
 process.once('SIGTERM',()=>{receiver.kill('SIGTERM');void engine.close().finally(()=>{server.close();process.exit(143)})})
 try{
+ console.error('engine-smoke: initialize owned browser')
  await engine.initialize();assert.ok(engine.getFrame()?.length>1000)
+ console.error('engine-smoke: open and read HTML deck')
  await engine.openPresentation('http://127.0.0.1:18359/deck');assert.equal((await engine.readSlide()).pageNumber,1)
+ console.error('engine-smoke: next and first page while composite capture runs')
  assert.equal((await engine.nextSlide()).pageNumber,2);assert.equal((await engine.firstSlide()).pageNumber,1)
+ console.error('engine-smoke: simultaneous local RTMP and recording')
  await engine.startOutput({rtmpUrl:'rtmp://127.0.0.1:19359/live',streamKey:'test',record:true,width:640,height:360,fps:10,videoBitrate:'800k',audioBitrate:'96k'})
  const started=performance.now(),play=engine.playAudio(wave)
  await delay(300);engine.pauseAudio();await delay(350);engine.resumeAudio();await play
@@ -38,6 +42,7 @@ try{
  assert.equal(decoded.status,0);let energy=0;for(let at=0;at<decoded.stdout.length;at+=2)energy+=(decoded.stdout.readInt16LE(at)/32768)**2
  const rms=Math.sqrt(energy/(decoded.stdout.length/2));assert.ok(rms>.01,'recording must contain non-silent decoded audio')
  const last=statuses.filter(s=>s.output.active).at(-1);assert.ok(last?.output.encodedFrames>10)
+ console.error('engine-smoke: recover owned browser and restore current page')
  await engine.nextSlide();assert.equal((await engine.readSlide()).pageNumber,2)
  const previousBrowser=engine.browser;previousBrowser.process().kill('SIGKILL')
  const recoveryLimit=Date.now()+15000;while(Date.now()<recoveryLimit){await delay(200);if(engine.status().ready&&!engine.status().browserRecovering&&engine.status().slide.pageNumber===2&&engine.browser!==previousBrowser)break}
