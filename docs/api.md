@@ -55,3 +55,5 @@ GET /api/platforms 返回 catalog、connections 和连接上限。每个连接�
 动作包括 platform.chat.connect/login/disconnect/click，output.platform.start/stop/retry；都携带 id，登录点击另带截图坐标 x/y。GET /api/platforms/:id/frame.jpg 读取私有登录页面截图，尚无帧返回 204。所有入口都要求管理员认证。连接弹幕和开始推流分别触发。
 
 外部弹幕或指标可携带已配置的 connectionId，服务端按该配置补充来源并命名空间化消息 ID。没有该字段时保留原接入口语义。统一状态的 media.output.running 表示输出引擎/重试仍在运行；active 表示至少一个发送或录像端有实际进度。判断某个平台是否输出请使用 media.output.platforms 中该 id 的 active，而不要把本地录像进度当成平台成功。
+
+Platform edits/removal and global output startup are mutually excluded for each affected connection. Starting output while a connection is being changed returns HTTP 409; retry after that edit completes. Stopping output cancels pending starts, including requests queued behind a login operation.

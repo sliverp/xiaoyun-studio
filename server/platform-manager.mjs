@@ -7,7 +7,7 @@ import {PlatformChatCollector} from './platform-chat.mjs'
 
 const busy=value=>Boolean(value&&(!['stopped','error','idle'].includes(value.state)||value.active))
 export class PlatformManager{
- constructor({store,media,director,events,dataDir,collectorFactory,prepareOutput}){Object.assign(this,{store,media,director,events,dataDir,collectorFactory,prepareOutput});this.collectors=new Map();this.operations=new Map();this.outputGeneration=0;this.streamGenerations=new Map();this.closed=false}
+ constructor({store,media,director,events,dataDir,collectorFactory,prepareOutput}){Object.assign(this,{store,media,director,events,dataDir,collectorFactory,prepareOutput});this.collectors=new Map();this.operations=new Map();this.configurationChanges=new Set();this.outputGeneration=0;this.streamGenerations=new Map();this.closed=false}
  withConnection(id,operation){
   const previous=this.operations.get(id)||Promise.resolve(),task=previous.catch(()=>{}).then(()=>{if(this.closed)throw new Error('平台管理器已关闭');return operation()});this.operations.set(id,task)
   return task.finally(()=>{if(this.operations.get(id)===task)this.operations.delete(id)})
@@ -15,8 +15,9 @@ export class PlatformManager{
  connect(id,options){return this.withConnection(id,()=>this._connect(id,options))}
  disconnect(id){return this.withConnection(id,()=>this._disconnect(id))}
  click(id,point){return this.withConnection(id,()=>this._click(id,point))}
- update(id,value){return this.withConnection(id,()=>this._update(id,value))}
- remove(id){return this.withConnection(id,()=>this._remove(id))}
+ async changeConfiguration(id,operation){this.configurationChanges.add(id);try{return await operation()}finally{this.configurationChanges.delete(id)}}
+ update(id,value){return this.withConnection(id,()=>this.changeConfiguration(id,()=>this._update(id,value)))}
+ remove(id){return this.withConnection(id,()=>this.changeConfiguration(id,()=>this._remove(id)))}
  outputIntent(id){const generation=this.outputGeneration,streamGeneration=this.streamGenerations.get(id)||0;return()=>{if(this.closed||generation!==this.outputGeneration||streamGeneration!==(this.streamGenerations.get(id)||0))throw Object.assign(new Error('推流启动已取消'),{status:409})}}
  cancelOutputStarts(){this.outputGeneration++}
  start(id){const assertWanted=this.outputIntent(id);return this.withConnection(id,()=>{assertWanted();return this._start(id,assertWanted)})}
@@ -47,7 +48,7 @@ export class PlatformManager{
   const result=this.store.savePlatform(value,id);this.publish();return result
  }
  async _remove(id){this.connection(id);if(busy(this.stream(id)))throw Object.assign(new Error('请先停止此平台推流，再移除连接'),{status:409});if(this.media.status().output?.platforms?.some(item=>item.id===id))await this.media.stopDestination(id);await this.collectors.get(id)?.close();this.collectors.delete(id);this.store.removePlatform(id);this.director.removePlatformMetrics?.(id);await rm(join(this.dataDir,'platforms',id),{recursive:true,force:true});this.publish()}
- destinations(ids){return(ids?ids.map(id=>this.connection(id)):this.store.get().platforms.filter(c=>c.enabled)).map(c=>{if(!c.rtmpUrl)throw new Error('请先填写「'+c.name+'」的推流地址，或取消参与同时推流');return {id:c.id,platform:c.platform,name:c.name,rtmpUrl:c.rtmpUrl,streamKey:this.store.platformSecret(c.id)}})}
+ destinations(ids){return(ids?ids.map(id=>this.connection(id)):this.store.get().platforms.filter(c=>c.enabled)).map(c=>{if(this.configurationChanges.has(c.id))throw Object.assign(new Error('平台连接正在修改，请完成后再开始推流'),{status:409});if(!c.rtmpUrl)throw new Error('请先填写「'+c.name+'」的推流地址，或取消参与同时推流');return {id:c.id,platform:c.platform,name:c.name,rtmpUrl:c.rtmpUrl,streamKey:this.store.platformSecret(c.id)}})}
  async _start(id,assertWanted=()=>{}){assertWanted();const destination=this.destinations([id])[0],output=this.media.status().output;if(output?.running||output?.encodingActive||output?.active)await this.media.addDestination(destination);else{const c=this.store.get();await this.media.startOutput({...c.output,videoBitrate:c.output.videoBitrate+'k',audioBitrate:c.output.audioBitrate+'k',destinations:[destination]},{prepare:this.prepareOutput})}this.publish()}
  async _stop(id){this.connection(id);if(this.media.status().output?.platforms?.some(item=>item.id===id))await this.media.stopDestination(id);this.publish()}
  async _retry(id,assertWanted){this.connection(id);if(this.stream(id).active)return;if(this.media.status().output?.platforms?.some(item=>item.id===id))await this.media.stopDestination(id);assertWanted();await this._start(id,assertWanted);this.publish()}

@@ -109,3 +109,12 @@ test('application shutdown stops reserved output before awaiting platform operat
  const closing=f.app.close();await new Promise(done=>setImmediate(done));const stopBeforeWait=stopped;release();await closing;await starting
  assert.equal(stopBeforeWait,true)
 })
+
+for(const remove of [false,true])test(`global output cannot start with a connection while ${remove?'removal':'credential and room editing'} is closing its login browser`,async t=>{
+ const f=await fixture(t),c=await f.create('bilibili',{rtmpUrl:'rtmp://localhost:19359/live'});await f.action('platform.chat.connect',c.id)
+ let release;const closing=new Promise(done=>release=done);f.collectors[0].close=async()=>closing
+ const changing=remove?f.app.platforms.remove(c.id):f.app.platforms.update(c.id,{roomUrl:'67890',streamKey:'fixture-updated-key'})
+ await new Promise(done=>setImmediate(done));const response=await f.action('output.start');release();await changing
+ assert.equal(response.status,409);assert.equal(f.app.media.started,null);assert.deepEqual(f.app.media.destinations,[])
+ if(!remove){assert.equal((await f.action('output.start')).status,200);assert.equal(f.app.media.started.destinations[0].streamKey,'fixture-updated-key')}
+})
