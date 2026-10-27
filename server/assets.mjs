@@ -5,12 +5,12 @@ import { atomicJson } from './store.mjs'
 export const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.svg':'image/svg+xml','.gif':'image/gif','.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4','.mp4':'video/mp4','.pdf':'application/pdf','.md':'text/markdown; charset=utf-8','.txt':'text/plain; charset=utf-8'}
 const EXT={html:['.html','.htm'],image:['.png','.jpg','.jpeg','.webp','.gif'],audio:['.mp3','.wav','.ogg','.m4a'],pdf:['.pdf'],notes:['.md','.txt']}
 export class Assets {
- constructor({root,dataDir}){this.root=root;this.dataDir=dataDir;this.dir=join(dataDir,'assets');this.file=join(dataDir,'assets.json');mkdirSync(this.dir,{recursive:true,mode:0o700});try{this.entries=JSON.parse(readFileSync(this.file,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;this.entries=[]}}
+ constructor({root,dataDir,runtimeDataDir=dataDir}){this.root=root;this.dataDir=dataDir;this.runtimeDataDir=runtimeDataDir;this.dir=join(dataDir,'assets');this.file=join(dataDir,'assets.json');mkdirSync(this.dir,{recursive:true,mode:0o700});try{this.entries=JSON.parse(readFileSync(this.file,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;this.entries=[]}}
  list(){
   const result=[{id:'sample-slides',name:'小云 Studio 演示稿',url:'/assets/builtin/slides/index.html',type:'html',builtin:true}]
   for(const [file,name] of [['upbeat-loop.mp3','Upbeat Loop · 节奏轻快'],['raspberry-jam.mp3','Raspberry Jam · 清爽律动'],['dance-field.mp3','Dance Field · 鼓点'],['gymnopedie-no1.mp3','Gymnopédie · 舒缓']])result.push({id:file,name,url:'/assets/builtin/bgm/'+file,type:'audio',builtin:true})
   result.push(...this.entries)
-  const recordings=join(this.dataDir,'recordings')
+  const recordings=join(this.runtimeDataDir,'recordings')
   try{for(const name of readdirSync(recordings).filter(n=>/^[\w.-]+\.mp4$/.test(n)).slice(-100))result.push({id:name,name,url:'/assets/recordings/'+name,type:'recording',size:statSync(join(recordings,name)).size})}catch(e){if(e.code!=='ENOENT')throw e}
   return result
  }
@@ -20,8 +20,8 @@ export class Assets {
   if(pathname.startsWith('/assets/builtin/')){base=join(this.root,'public/builtin');relative=pathname.slice('/assets/builtin/'.length)}
   else if(pathname.startsWith('/assets/demo/')){base=join(this.root,'public/demo');relative=pathname.slice('/assets/demo/'.length)}
   else if(pathname.startsWith('/assets/uploads/')){base=this.dir;relative=pathname.slice('/assets/uploads/'.length)}
-  else if(pathname.startsWith('/assets/audio/')){base=join(this.dataDir,'audio');relative=pathname.slice('/assets/audio/'.length)}
-  else if(pathname.startsWith('/assets/recordings/')){base=join(this.dataDir,'recordings');relative=pathname.slice('/assets/recordings/'.length)}
+  else if(pathname.startsWith('/assets/audio/')){base=join(this.runtimeDataDir,'audio');relative=pathname.slice('/assets/audio/'.length)}
+  else if(pathname.startsWith('/assets/recordings/')){base=join(this.runtimeDataDir,'recordings');relative=pathname.slice('/assets/recordings/'.length)}
   else throw new Error('素材地址无效')
   relative=decodeURIComponent(relative)
   if(relative.split(/[\\/]/).some(p=>p==='..'||p==='.'||!p)||relative.includes('\0'))throw new Error('素材路径无效')

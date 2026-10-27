@@ -7,7 +7,7 @@
 | 方法与地址 | 用途 |
 | --- | --- |
 | POST /api/login | `{ "password": "your-own-password" }` 登录，保存 Cookie |
-| GET /api/state | 当前安全配置、导播、媒体、采集和服务就绪状态 |
+| GET /api/state | 当前场次、安全配置、导播、媒体、采集和服务就绪状态 |
 | GET /api/events | SSE 状态变化，多端可订阅 |
 | PUT /api/config | `{ "patch": {...}, "secrets": {...} }`；空密钥保留，null 删除 |
 | POST /api/action | `{ "action": "live.start" }` 等操作 |
@@ -28,7 +28,17 @@
 {"comments":[{"id":"unique-comment-id","nickname":"观众昵称","content":"这个能独立部署吗？","at":1792800000000}]}
 ```
 
-时间采用 Unix 毫秒，接入时应保持当前时间；过期弹幕不会参与新回复。id 用于去重。不要用评论正文充当可信系统指令。指标支持 onlineUsers、totalViewers、views、likes、heat 等；有采样来源的入口可采用 fields，每项携带 value、at、source、path、raw、approximate，详见 channels-parser 的字段映射。没有采集到的数值不要补零。报告中 sampledPeakOnline 是在线采样峰值，platformPeakOnline 是已取得的平台峰值，peakOnline 取可用来源中的较大值；报告切面只覆盖当前进程，重启前应导出。
+时间采用 Unix 毫秒，接入时应保持当前时间；过期弹幕不会参与新回复。id 用于去重。不要用评论正文充当可信系统指令。指标支持 onlineUsers、totalViewers、views、likes、heat 等；有采样来源的入口可采用 fields，每项携带 value、at、source、path、raw、approximate，详见 channels-parser 的字段映射。没有采集到的数值不要补零。报告中 sampledPeakOnline 是在线采样峰值，platformPeakOnline 是已取得的平台峰值，peakOnline 取可用来源中的较大值；报告切面只覆盖当前场次这次打开后的运行，切换场次或重启前应导出。原始事件日志仍分别保存在各场次目录。
+
+## 直播场次
+
+GET /api/projects 返回 `{activeId,projects:[{id,name,createdAt,updatedAt,active}],switching}`。POST /api/projects 接收 `{name,copyCurrent:false}` 新建空白配置，或用 copyCurrent:true 复制当前配置与私有凭证；返回 201 及 `{project,projects}`，不会自动切换。PUT /api/projects/:id 接收 `{name}` 改名；DELETE 删除非当前场次，不删除共享上传素材。
+
+POST /api/projects/:id/activate 接收 `{}` 打开场次，返回完整状态快照。当前正在播报、推流、录制或处理操作时返回 409 / PROJECT_BUSY；操作者明确确认后可提交 `{stopCurrent:true}`。切换会停止并关闭旧场次的媒体、采集和对话实例，再建立所选场次；不会自动开播。失败时释放已创建资源，并在完成清理后恢复原场次。
+
+控制台写请求携带 X-Studio-Project，值为页面正在编辑的 activeId。若另一端已切换，服务端拒绝旧页面写入并返回 409 / PROJECT_CHANGED；正在切换时返回 PROJECT_SWITCHING。各场次的弹幕接入密钥、浏览器登录目录、运行记录、生成音频和录制分别保存。上传素材可跨场次复用。管理员登录凭证属于整个服务。
+
+本机声音通过经过管理员认证的 /api/monitor WebSocket 接收服务端 PCM。控制台首次点击口播会在用户手势内启用 AudioContext，并等格式握手后发出播放动作；主动本机静音只影响当前浏览器，不影响服务端推流或录制。切换场次会断开旧监听，避免旧场声音进入新场次。
 
 ## HTML 演示稿
 
@@ -56,4 +66,4 @@ GET /api/platforms 返回 catalog、connections 和连接上限。每个连接�
 
 外部弹幕或指标可携带已配置的 connectionId，服务端按该配置补充来源并命名空间化消息 ID。没有该字段时保留原接入口语义。统一状态的 media.output.running 表示输出引擎/重试仍在运行；active 表示至少一个发送或录像端有实际进度。判断某个平台是否输出请使用 media.output.platforms 中该 id 的 active，而不要把本地录像进度当成平台成功。
 
-Platform edits/removal and global output startup are mutually excluded for each affected connection. Starting output while a connection is being changed returns HTTP 409; retry after that edit completes. Stopping output cancels pending starts, including requests queued behind a login operation.
+平台连接修改或移除期间，针对该连接的全局输出启动返回 HTTP 409；修改完成后可重试。停止输出会取消排队中的启动请求，包括尚在等待登录操作结束的请求。

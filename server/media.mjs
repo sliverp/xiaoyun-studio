@@ -20,10 +20,10 @@ export function detectTools(){
 }
 /** Own isolated browser rendering, continuous audio mixing, recording and RTMP output. */
 export class MediaEngine {
-  constructor({dataDir,baseUrl,renderToken,getSettings,onStatus=()=>{},onMeter=()=>{},onFrame=()=>{},onAudio=()=>{}}){
-    Object.assign(this,{dataDir,baseUrl,renderToken,getSettings,onStatus,onMeter,onFrame,onAudio})
+  constructor({dataDir,baseUrl,renderToken,getSettings,onStatus=()=>{},onMeter=()=>{},onFrame=()=>{},onAudio=()=>{},launch=options=>puppeteer.launch(options)}){
+    Object.assign(this,{dataDir,baseUrl,renderToken,getSettings,onStatus,onMeter,onFrame,onAudio,launch})
     this.networkPolicy=createPresentationNetworkPolicy(baseUrl)
-    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0}
+    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closingPromise=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0}
     mkdirSync(dataDir,{recursive:true})
     this.outputGraph=new OutputGraph({ffmpeg:this.tools.ffmpeg.path,dataDir,getFrame:()=>this.frame,renderToken,onStatus:()=>this.emit(),onDrop:()=>{this.droppedFrames++}})
     if(this.tools.ffmpeg.available)this.mixer=new AudioMixer({ffmpeg:this.tools.ffmpeg.path,onPcm:buffer=>this.writePcm(buffer),canOutput:()=>!this.output?.audioBlocked,onMeter:meter=>{this.meter=meter;this.onMeter(meter)}})
@@ -33,8 +33,8 @@ export class MediaEngine {
   emit(){this.onStatus(this.status())}
   async initialize(){
     if(this.closed)throw new Error('渲染引擎已关闭')
-    if(this.browser&&this.programPage)return
     if(this.initializing)return this.initializing
+    if(this.browser&&this.programPage)return
     this.initializing=this.openBrowser().finally(()=>{this.initializing=null})
     return this.initializing
   }
@@ -45,7 +45,7 @@ export class MediaEngine {
     const args=['--autoplay-policy=no-user-gesture-required','--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows','--mute-audio']
     if(process.env.CHROMIUM_NO_SANDBOX==='1'||process.getuid?.()===0)args.push('--no-sandbox')
     try{
-      this.browser=await puppeteer.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,protocolTimeout:30000,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
+      this.browser=await this.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,protocolTimeout:30000,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
       if(this.closed){await this.browser.close();this.browser=null;throw new DOMException('渲染启动已取消','AbortError')}
       const owned=this.browser
       owned.once('disconnected',()=>{
@@ -60,7 +60,7 @@ export class MediaEngine {
       const url=new URL('/program',this.baseUrl);url.searchParams.set('renderToken',this.renderToken)
       await this.programPage.goto(url.href,{waitUntil:'domcontentloaded',timeout:30000})
       await this.programPage.evaluate(()=>document.fonts.ready)
-      await sleep(200);await this.capture();this.startCapture();this.browserHealthy=true;this.lastError='';this.emit()
+      await sleep(200);if(this.closed)throw new DOMException('渲染启动已取消','AbortError');await this.capture();if(this.closed)throw new DOMException('渲染启动已取消','AbortError');this.startCapture();this.browserHealthy=true;this.lastError='';this.emit()
     }catch(error){this.browserHealthy=false;this.lastError=redactMediaError(error.message,[this.renderToken]);await this.browser?.close().catch(()=>{});this.browser=null;this.programPage=null;throw new Error('后台渲染初始化失败：'+this.lastError)}
   }
   async recoverBrowser(){
@@ -77,6 +77,7 @@ export class MediaEngine {
     try{await recovery}finally{if(this.browserRecovery===recovery)this.browserRecovery=null;this.emit()}
   }
   startCapture(){
+    if(this.closed)return
     if(this.captureTimer)clearInterval(this.captureTimer)
     const fps=Math.max(5,Math.min(30,this.getSettings().output?.fps||15))
     this.captureTimer=setInterval(()=>this.capture().catch(error=>{this.lastError=redactMediaError(error.message,[this.renderToken]);this.emit()}),1000/fps)
@@ -273,5 +274,25 @@ export class MediaEngine {
   async stopDestination(id){await this.outputGraph.stopDestination(id);return this.status()}
   async retryDestination(id){await this.outputGraph.retryDestination(id);return this.status()}
   async stopOutput(){await this.outputGraph.stop();return this.status()}
-  async close(){if(this.closed)return;this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null;this.mixer?.close();await this.outputGraph.close();await this.browser?.close().catch(()=>{});this.browser=null;this.programPage=null}
+  /** Wait for pending browser launches and all owned media cleanup before releasing the renderer profile. */
+  async close(){
+    if(this.closingPromise)return this.closingPromise
+    this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null
+    const initializing=this.initializing,browser=this.browser;this.browser=null
+    this.closingPromise=(async()=>{
+      const closeBrowser=async()=>{
+        const cleanup=await Promise.allSettled([Promise.resolve().then(()=>browser?.close()),Promise.resolve(initializing).catch(()=>{/* The initialization caller receives its startup error; shutdown still waits for late-launch cleanup. */})])
+        if(this.browser&&this.browser!==browser){const late=this.browser;cleanup.push(...await Promise.allSettled([Promise.resolve().then(()=>late.close())]))}
+        const errors=cleanup.filter(result=>result.status==='rejected').map(result=>result.reason)
+        if(errors.length===1)throw errors[0]
+        if(errors.length>1)throw new AggregateError(errors,'渲染浏览器关闭失败')
+      }
+      const cleanup=await Promise.allSettled([Promise.resolve().then(()=>this.mixer?.close()),Promise.resolve().then(()=>this.outputGraph.close()),closeBrowser()])
+      this.browser=null;this.programPage=null;this.deckPage=null;clearInterval(this.captureTimer);this.captureTimer=null
+      const errors=cleanup.filter(result=>result.status==='rejected').map(result=>result.reason)
+      if(errors.length===1)throw errors[0]
+      if(errors.length>1)throw new AggregateError(errors,'媒体资源关闭失败')
+    })()
+    return this.closingPromise
+  }
 }

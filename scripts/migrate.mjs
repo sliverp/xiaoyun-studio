@@ -2,12 +2,13 @@
 import {existsSync,mkdirSync,readdirSync,readFileSync,copyFileSync,lstatSync,writeFileSync} from 'node:fs'
 import {resolve,join,extname} from 'node:path'
 import {randomUUID,createHash} from 'node:crypto'
-import {Store,atomicJson} from '../server/store.mjs'
+import {atomicJson} from '../server/store.mjs'
+import {ProjectLibrary} from '../server/projects.mjs'
 const args=process.argv.slice(2),option=name=>{const i=args.indexOf(name);return i<0?null:args[i+1]},source=option('--source')
 if(!source){console.error('用法：npm run migrate -- --source /path/to/previous-project [--apply] [--data .data]');process.exit(1)}
 const root=resolve(import.meta.dirname,'..'),origin=resolve(source),dataDir=resolve(option('--data')||join(root,'.data'))
 if(origin===root||dataDir===origin||dataDir.startsWith(origin+'/'))throw new Error('导入目录不能位于旧项目中')
-const store=new Store({root,dataDir,env:{}}),id='imported-'+randomUUID(),folder=join(dataDir,'assets',id),entries=[]
+const store=new ProjectLibrary({root,dataDir,env:{}}).activeStore,id='imported-'+randomUUID(),folder=join(dataDir,'assets',id),entries=[]
 mkdirSync(folder,{recursive:true,mode:0o700})
 function copyTree(from,to){mkdirSync(to,{recursive:true,mode:0o700});let count=0;for(const name of readdirSync(from)){const src=join(from,name),stat=lstatSync(src);if(stat.isSymbolicLink())continue;if(stat.isDirectory())count+=copyTree(src,join(to,name));else if(['.html','.js','.css','.json','.png','.jpg','.jpeg','.svg','.webp','.mp3','.wav'].includes(extname(name).toLowerCase())){copyFileSync(src,join(to,name));count++}}return count}
 const deck=join(origin,'materials/live-1024-deck/site');let files=0,deckUrl='',notes=''

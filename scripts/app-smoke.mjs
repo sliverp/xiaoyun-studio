@@ -71,7 +71,7 @@ try{
  const consumedMs=Math.round(performance.now()-started);assert.ok(consumedMs>=2400,'cue completion must wait for actual PCM plus the controller pause')
  await delay(1200);const progressed=await state(second);assert.ok(progressed.media.output.encodedFrames>encoding.media.output.encodedFrames)
  await action('output.stop',second);assert.equal((await state(second)).media.output.active,false)
- const recording=join(directory,'recordings',app.media.status().output.recordingFile),decoded=spawnSync(tools.ffmpeg.path,['-hide_banner','-loglevel','error','-i',recording,'-vn','-f','s16le','-ar','16000','-ac','1','pipe:1'],{maxBuffer:16*1024*1024})
+ const recording=join(app.runtimeDataDir||directory,'recordings',app.media.status().output.recordingFile),decoded=spawnSync(tools.ffmpeg.path,['-hide_banner','-loglevel','error','-i',recording,'-vn','-f','s16le','-ar','16000','-ac','1','pipe:1'],{maxBuffer:16*1024*1024})
  assert.equal(decoded.status,0);let energy=0;for(let at=0;at+1<decoded.stdout.length;at+=2)energy+=(decoded.stdout.readInt16LE(at)/32768)**2
  const recordingRms=Math.sqrt(energy/(decoded.stdout.length/2)),monitorRms=Math.sqrt(pcmPower/pcmSamples)
  assert.ok(recordingRms>.01&&monitorRms>.01&&pcmBytes>48000,'recording and authenticated operator monitoring must contain actual audio')

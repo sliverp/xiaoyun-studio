@@ -96,6 +96,39 @@ test('an operator audio callback receives PCM without an output and cannot stop 
  t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
  engine.writePcm(Buffer.alloc(FRAME_BYTES));assert.equal(bytes,FRAME_BYTES);assert.equal(engine.status().output.active,false)
 })
+test('closing still releases the mixer and browser when output teardown rejects',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-close-failure-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})}),failure=new Error('fixture output close failure')
+ t.after(()=>rmSync(dataDir,{recursive:true,force:true}))
+ let browserClosed=false;engine.mixer||={closed:false,close(){this.closed=true}};engine.browser={async close(){browserClosed=true}};engine.programPage={};engine.deckPage={};engine.outputGraph.close=async()=>{throw failure}
+ await assert.rejects(engine.close(),error=>error===failure)
+ assert.equal(engine.mixer.closed,true);assert.equal(browserClosed,true);assert.equal(engine.browser,null);assert.equal(engine.programPage,null);assert.equal(engine.deckPage,null)
+ await assert.rejects(engine.close(),error=>error===failure)
+})
+test('close callers wait until a delayed browser launch releases its profile',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-late-browser-'));let finishLaunch,finishBrowserClose,enteredClose,firstClosed=false,secondClosed=false,closeCalls=0,profileHeld=false
+ const launched=new Promise(resolve=>{finishLaunch=resolve}),browserClosed=new Promise(resolve=>{finishBrowserClose=resolve}),closeEntered=new Promise(resolve=>{enteredClose=resolve})
+ const browser={async close(){closeCalls++;enteredClose();await browserClosed;profileHeld=false}}
+ const engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}}),launch:()=>launched})
+ engine.tools={ready:true,chromium:{path:'fixture-chromium'},ffmpeg:{path:null,available:false}}
+ t.after(()=>rmSync(dataDir,{recursive:true,force:true}))
+ const initializing=engine.initialize(),rejected=assert.rejects(initializing,/取消/),first=engine.close().then(()=>{firstClosed=true}),second=engine.close().then(()=>{secondClosed=true})
+ await Promise.resolve();assert.equal(firstClosed,false);assert.equal(secondClosed,false)
+ profileHeld=true;finishLaunch(browser);await closeEntered
+ assert.equal(profileHeld,true);assert.equal(firstClosed,false);assert.equal(secondClosed,false)
+ finishBrowserClose();await Promise.all([first,second,rejected])
+ assert.equal(profileHeld,false);assert.equal(closeCalls,1);assert.equal(engine.browser,null);assert.equal(engine.initializing,null)
+ engine.startCapture();assert.equal(engine.captureTimer,null)
+ await assert.rejects(engine.initialize(),/已关闭/)
+})
+test('concurrent initialization waits for setup even after the browser page exists',async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-initialize-ready-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})});let finishSetup,ready=false
+ const setup=new Promise(resolve=>{finishSetup=resolve})
+ engine.openBrowser=async()=>{engine.browser={async close(){}};engine.programPage={viewport:()=>({width:640,height:360})};await setup}
+ t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
+ const first=engine.initialize(),second=engine.initialize().then(()=>{ready=true})
+ await Promise.resolve();await Promise.resolve();assert.equal(ready,false)
+ finishSetup();await Promise.all([first,second]);assert.equal(ready,true)
+})
 test('closing the engine cancels browser recovery before another browser can launch',async t=>{
  t.mock.timers.enable({apis:['setTimeout']})
  const dataDir=mkdtempSync(join(tmpdir(),'studio-browser-recover-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})

@@ -21,7 +21,7 @@ async function run(name){
   }finally{clearTimeout(timeout);clearTimeout(force)}
 }
 const started=performance.now(),checks={};let failedCheck='',failure=''
-for(const name of ['engine-smoke','pdf-smoke','app-smoke','multistream-smoke']){
+for(const name of ['engine-smoke','pdf-smoke','app-smoke','audio-monitor-smoke','multistream-smoke']){
  try{checks[name]=await run(name)}catch(error){failedCheck=name;failure=String(error.message);break}
 }
 const result={passed:!failure,platform:process.platform,node:process.version,elapsedMs:Math.round(performance.now()-started),checks,...(failure?{failedCheck,error:failure}:{})}

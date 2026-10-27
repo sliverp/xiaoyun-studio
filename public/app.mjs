@@ -5,6 +5,8 @@ let snapshot = {}, authenticated = false, eventSource = null, configDirty = fals
 let channelsTimer = null, channelsFocus = null, channelsFrameRevision = 0, activePlatformId = null;
 let editingPlatformId = null, selectedPlatformKind = null, platformReturnFocus = null;
 let audioMonitor = null, monitorEnabled = false, monitorReconnect = null;
+let monitorPreference = localStorage.getItem('xiaoyun-local-sound')||'auto', monitorState = 'muted';
+let workspaceOpen=false,projectEpoch=0,projectSwitchPending=false,projectFormMode='create',editingProjectMetaId=null,projectReturnFocus=null,pendingProjectContinuation=null,pendingSwitchProjectId=null,deletingProjectId=null;
 let microphone = null, microphoneEnabled = false, microphoneBusy = false, recordingParts = [], preRoll = [], phraseStarted = 0, lastVoicedAt = 0, voicedDuration = 0, phraseActive = false, asrAbort = null;
 const stageLabels = {idle:'准备就绪',ended:'已结束',cue:'固定口播',question:'人机对话',stopped:'已停止',opening:'开场欢迎',source:'内容讲解',lecture:'内容讲解',comment:'弹幕回应',engagement:'互动引导','flash-sale':'秒杀提醒',sale:'秒杀提醒',lottery:'口令抽奖','lottery-announcement':'抽奖说明','lottery-wait':'等待参与','lottery-result':'开奖播报',closing:'收尾告别',waiting:'等待就绪',advancing:'翻页',error:'需要处理',paused:'已暂停',scheduling:'调度下一轮'};
 const stageDescriptions = {idle:'配置素材与模型后，开始你的直播。',stopped:'当前没有 AI 播报，开始后会从开场进入分享。',opening:'先欢迎观众，再自然进入本场主题。',source:'讲一个完整段落，再检查弹幕、互动和翻页。',comment:'查看近期未读弹幕，回应共同问题或具体观众。',engagement:'适量提问或邀请点赞、分享，然后回到内容。','flash-sale':'参与提醒后继续当前主题，二维码独立到期收起。',sale:'参与提醒后继续当前主题，二维码独立到期收起。',closing:'告别完整播完后，停止 AI 播报。',advancing:'正在等待下一页画面与内容。',error:'检查错误提示和运行检查，修复后再继续。'};
@@ -15,15 +17,61 @@ function stateValue(value) { if (value?.state?.config) return value.state; if (v
 function notify(message, error = false) { $('toast').textContent = String(message); $('toast').style.borderColor = error ? '#bd6579' : ''; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, error ? 7000 : 3500); }
 function showError(error) { const text = error?.message || String(error); $('global-alert').textContent = text; $('global-alert').hidden = false; notify(text,true); logActivity(text,true); }
 function markDirty() { configDirty = true; $('settings-dirty').hidden = false; }
-async function api(path, {method = 'GET',body,signal,headers={}}={}) {
+async function api(path, {method = 'GET',body,signal,headers={},projectId=projectData().activeId}={}) {
   const options = {method,cache:'no-store',credentials:'same-origin',headers:{...headers},signal};
+  if(method!=='GET'&&projectId&&!['/api/login','/api/logout'].includes(path))options.headers['X-Studio-Project']=projectId;
   if (body !== undefined) { if (body instanceof Blob || body instanceof ArrayBuffer || body instanceof Uint8Array) options.body = body; else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); } }
   const response = await fetch(path, options);
   let value; try { value = await response.json(); } catch { throw new Error(`服务返回了无法读取的响应（${response.status}）`); }
   if (response.status === 401 && authenticated) { showLogin(); throw new Error('登录已过期，请重新登录。'); }
-  if (!response.ok || value?.ok === false) throw new Error(value.error || value.message || `操作失败（${response.status}）`);
+  if (!response.ok || value?.ok === false) {const error=new Error(value.error||value.message||`操作失败（${response.status}）`);error.status=response.status;error.response=value;error.code=value.code;if(value.code==='PROJECT_CHANGED'&&authenticated)void refreshState().catch(()=>{});throw error;}
+  if(method!=='GET'&&projectId&&!['/api/login','/api/logout'].includes(path)&&!/^\/api\/projects\/[^/]+\/activate$/.test(path))requireCurrentProject(projectId);
   return value;
 }
+function projectData(){const value=snapshot.projects||{};return {activeId:value.activeId||null,projects:Array.isArray(value.projects)?value.projects:[]};}
+function currentProject(){const data=projectData();return data.projects.find(item=>item.id===data.activeId)||null;}
+function acceptProjects(value){const data=Array.isArray(value?.projects)?value:value?.projects;if(!data||!Array.isArray(data.projects))return;const boundId=projectData().activeId;if(boundId&&data.activeId!==boundId){snapshot.projects={...data,activeId:boundId};renderProjects();void refreshState().catch(()=>{});return;}snapshot.projects=data;renderProjects();}
+function projectDate(value){const date=new Date(value);return Number.isFinite(date.getTime())?new Intl.DateTimeFormat('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}).format(date):'刚刚';}
+function renderProjects(){
+ const {activeId,projects}=projectData(),current=currentProject();$('current-project-name').textContent=current?.name||'未选择场次';$('project-count').textContent=`${projects.length} 个场次`;$('copy-current-project').disabled=!current||projectSwitchPending||snapshot.projects?.switching===true;
+ const busy=projectSwitchPending||snapshot.projects?.switching;const signature=JSON.stringify([activeId,projects,busy]);if($('project-list').dataset.signature===signature)return;$('project-list').dataset.signature=signature;
+ $('project-list').innerHTML=projects.length?projects.map((item,index)=>`<article class="panel project-card ${item.id===activeId?'is-current':''}"><div class="project-card-top"><span class="project-card-symbol">${String(index+1).padStart(2,'0')}</span><span class="badge ${item.id===activeId?'current-project-badge':''}">${item.id===activeId?'当前场次':'已保存'}</span></div><h3>${escapeHtml(item.name)}</h3><p>更新于 ${escapeHtml(projectDate(item.updatedAt||item.createdAt))}</p><div class="project-card-actions"><button class="primary" data-project-open="${escapeHtml(item.id)}" ${item.id===activeId?'id="open-current-project"':''} ${busy?'disabled':''}>${item.id===activeId?'打开当前场次':'打开场次'}</button><button class="ghost" data-project-rename="${escapeHtml(item.id)}" ${busy?'disabled':''}>重命名</button>${item.id===activeId?'':`<button class="icon-button" data-project-delete="${escapeHtml(item.id)}" aria-label="删除 ${escapeHtml(item.name)}" ${busy?'disabled':''}>删除</button>`}</div></article>`).join(''):'<div class="panel projects-empty"><h3>为下一场直播，留一个位置。</h3><p>新建场次后，口播、讲解素材与平台配置都会保存下来。</p><button class="primary" data-project-create>＋ 新建场次</button></div>';
+}
+async function refreshProjects(){if(!authenticated)return;const epoch=projectEpoch;try{const value=await api('/api/projects');if(epoch!==projectEpoch)return;acceptProjects(value);$('projects-error').hidden=true;}catch(error){if(epoch===projectEpoch){$('projects-error').textContent=error.message;$('projects-error').hidden=false;}throw error;}}
+function showProjectHome(){workspaceOpen=false;$('project-workspace').hidden=true;$('projects-home').hidden=false;void refreshProjects().catch(()=>{});}
+async function showProjectWorkspace(){workspaceOpen=true;$('projects-home').hidden=true;$('project-workspace').hidden=false;useTab('director');await Promise.all([refreshAssets(),refreshPlatforms()]);updatePreviews();}
+function clearProjectForms(){configDirty=false;hydrated=false;$('settings-dirty').hidden=true;for(const id of ['cue-editor','cue-list','fallback-editor','platform-list'])$(id).dataset.signature='';$$('[data-secret]').forEach(input=>input.value='');}
+function discardConfigChanges(){clearProjectForms();hydrate(snapshot.config||{},snapshot.secrets||{});}
+function resetProjectView(){
+ projectEpoch++;clearProjectForms();speechSignature='';seenHistory.clear();assets=[];renderAssets();$('conversation-log').innerHTML='<p class="empty-copy">你可以打字，或打开麦克风与小云对话。</p>';$('activity-log').innerHTML='<p class="empty-copy">状态变化、活动与错误会显示在这里。</p>';$('chat-text').value='';$('say-text').value='';$('global-alert').hidden=true;
+ for(const [id,empty]of [['program-preview','program-empty'],['slide-preview','slide-empty']]){$(id).removeAttribute('src');$(id).hidden=true;$(empty).hidden=false;}
+ for(const id of ['channels-dialog','platform-picker','platform-editor','project-form-dialog','project-unsaved-dialog','project-busy-dialog','project-delete-dialog'])$(id).hidden=true;
+ clearInterval(channelsTimer);channelsFrameRevision++;activePlatformId=null;editingPlatformId=null;selectedPlatformKind=null;pendingProjectContinuation=null;pendingSwitchProjectId=null;deletingProjectId=null;$('platform-key').value='';void stopMicrophone();clearMonitorNodes();if(audioMonitor){audioMonitor.ready=false;audioMonitor.format=null;audioMonitor.socket?.close();setMonitorState('connecting','场次已切换，正在连接新场次的本机声音。');}
+}
+function requireCurrentProject(id){if(id&&id!==projectData().activeId){const error=new Error('当前场次已切换，旧操作已取消，请在新场次重试。');error.status=409;error.code='PROJECT_CHANGED';throw error;}}
+function projectModalFocus(){if(!projectReturnFocus)projectReturnFocus=document.activeElement;}
+function restoreProjectFocus(){const element=projectReturnFocus?.isConnected?projectReturnFocus:$('new-project');projectReturnFocus=null;element?.focus();}
+function openProjectForm(mode,id=null){
+ if(mode==='copy'&&configDirty){askAboutUnsaved(()=>openProjectForm(mode,id));return;}
+ const item=id?projectData().projects.find(value=>value.id===id):currentProject();projectModalFocus();projectFormMode=mode;editingProjectMetaId=id;$('project-form-error').hidden=true;$('project-form-title').textContent=mode==='rename'?'重命名场次':mode==='copy'?'复制当前场次':'新建直播场次';$('save-project').textContent=mode==='rename'?'保存名称':mode==='copy'?'创建副本':'创建场次';$('project-name').value=mode==='rename'?item?.name||'':mode==='copy'?(item?.name||'当前场次')+' · 副本':'';$('project-form-description').textContent=mode==='rename'?'为这场直播换一个容易找到的名字。':mode==='copy'?'复制当前场次的设置与已保存凭证；运行记录和平台登录不会复制。':'每场单独保存口播、素材选择、平台与 AI 设置。创建后仍留在场次列表，由你决定何时打开。';$('project-form-dialog').hidden=false;$('project-name').focus();
+}
+function closeProjectForm(){ $('project-form-dialog').hidden=true;editingProjectMetaId=null;restoreProjectFocus(); }
+async function submitProjectForm(event){event.preventDefault();const button=$('save-project'),origin=projectData().activeId;button.disabled=true;$('project-form-error').hidden=true;try{const name=$('project-name').value.trim(),id=editingProjectMetaId;const value=await api('/api/projects'+(projectFormMode==='rename'?'/'+encodeURIComponent(id):''),{method:projectFormMode==='rename'?'PUT':'POST',body:{name,...(projectFormMode==='copy'?{copyCurrent:true}:{})},projectId:origin});requireCurrentProject(origin);acceptProjects(value);await refreshProjects();closeProjectForm();notify(projectFormMode==='rename'?'场次名称已保存':'场次已创建，点击「打开场次」继续配置');}catch(error){$('project-form-error').textContent=error.message;$('project-form-error').hidden=false;}finally{button.disabled=false;}}
+function askAboutUnsaved(continuation){projectModalFocus();pendingProjectContinuation=continuation;$('project-unsaved-error').hidden=true;$('project-unsaved-dialog').hidden=false;$('project-unsaved-save').focus();}
+function closeProjectUnsaved(){ $('project-unsaved-dialog').hidden=true;pendingProjectContinuation=null;restoreProjectFocus(); }
+async function continueAfterUnsaved(save){const buttons=['project-unsaved-save','project-unsaved-discard','project-unsaved-cancel'].map($);buttons.forEach(button=>button.disabled=true);try{if(save)await saveSettings({quiet:true});else discardConfigChanges();const continuation=pendingProjectContinuation;pendingProjectContinuation=null;$('project-unsaved-dialog').hidden=true;projectReturnFocus=null;await continuation?.();}catch(error){$('project-unsaved-error').textContent=error.message;$('project-unsaved-error').hidden=false;}finally{buttons.forEach(button=>button.disabled=false);}}
+function requestProjectOpen(id){if(!id)return;if(id===projectData().activeId){void showProjectWorkspace().catch(showError);return;}if(configDirty){askAboutUnsaved(()=>activateProject(id));return;}void activateProject(id);}
+function closeProjectBusy(){ $('project-busy-dialog').hidden=true;pendingSwitchProjectId=null;restoreProjectFocus(); }
+async function activateProject(id,stopCurrent=false){
+ const origin=projectData().activeId;if(projectSwitchPending)return;projectSwitchPending=true;$('project-force-switch').disabled=true;renderProjects();
+ try{const value=await api('/api/projects/'+encodeURIComponent(id)+'/activate',{method:'POST',body:stopCurrent?{stopCurrent:true}:{},projectId:origin});const state=stateValue(value);if(!state?.config)throw new Error('场次已切换，但未收到配置，请刷新后重试。');applyState(state);$('project-busy-dialog').hidden=true;pendingSwitchProjectId=null;projectReturnFocus=null;await showProjectWorkspace();notify('已打开「'+(currentProject()?.name||'直播场次')+'」');}
+ catch(error){if(error.status===409&&error.code==='PROJECT_BUSY'){pendingSwitchProjectId=id;projectModalFocus();$('project-busy-message').textContent=error.message;$('project-busy-error').hidden=true;$('project-busy-dialog').hidden=false;$('project-force-switch').focus();}else if(stopCurrent&&!$('project-busy-dialog').hidden){$('project-busy-error').textContent=error.message;$('project-busy-error').hidden=false;}else showError(error);}
+ finally{projectSwitchPending=false;$('project-force-switch').disabled=false;renderProjects();}
+}
+function openProjectDelete(id){const item=projectData().projects.find(value=>value.id===id);if(!item||id===projectData().activeId)return;projectModalFocus();deletingProjectId=id;$('project-delete-description').textContent='将删除「'+item.name+'」的场次设置和运行记录。当前场次不会受影响。';$('project-delete-error').hidden=true;$('project-delete-dialog').hidden=false;$('project-delete-cancel').focus();}
+function closeProjectDelete(){ $('project-delete-dialog').hidden=true;deletingProjectId=null;restoreProjectFocus(); }
+async function deleteProject(){if(!deletingProjectId)return;const button=$('project-delete-confirm');button.disabled=true;try{const value=await api('/api/projects/'+encodeURIComponent(deletingProjectId),{method:'DELETE'});acceptProjects(value);await refreshProjects();closeProjectDelete();notify('场次已删除');}catch(error){$('project-delete-error').textContent=error.message;$('project-delete-error').hidden=false;}finally{button.disabled=false;}}
+
 function useTab(name) {
   activeTab = name;
   $$('[data-tab]').forEach(button => { button.classList.toggle('active',button.dataset.tab === name); button.setAttribute('aria-selected',String(button.dataset.tab === name)); });
@@ -84,8 +132,8 @@ function updateRangeLabels() {
 }
 function updateTtsFields() { const provider = $('tts-provider').value; $('tencent-fields').hidden=provider!=='tencent'; $('compatible-tts-fields').hidden=provider!=='openai'; $('tts-demo-hint').hidden=provider!=='demo'; }
 async function saveSettings({quiet=false}={}) {
-  const body = readForm();
-  const result = await api('/api/config',{method:'PUT',body});
+  const origin=projectData().activeId,body=readForm();
+  const result=await api('/api/config',{method:'PUT',body,projectId:origin});requireCurrentProject(origin);
   configDirty=false;$('settings-dirty').hidden=true;
   $$('[data-secret]').forEach(input=>input.value='');
   const value=stateValue(result);if(value?.config)applyState(value);else await refreshState();
@@ -104,7 +152,7 @@ function platformCatalog(kind){return platformData().catalog.find(item=>item.id=
 function platformMark(kind){const style=platformMarks[kind]||{mark:'播',color:'#b0a5ff',tint:'#6d67ed25',line:'#7e77ff55'};return `<span class="platform-mark" style="--platform-color:${style.color};--platform-tint:${style.tint};--platform-line:${style.line}">${style.mark}</span>`;}
 function streamPresentation(stream){const state=stream.state||'stopped';if(stream.active===true)return {label:'正在推流',tone:'good',on:true};if(['preparing','starting','reconnecting','running','stopping'].includes(state))return {label:state==='stopping'?'正在停止推流':state==='reconnecting'?'正在重连':'正在连接推流',tone:'wait',on:true};if(state==='error')return {label:'推流失败',tone:'bad',on:false};return {label:state==='disabled'?'未启用推流':state==='not-configured'?'待填写推流信息':'未推流',tone:'',on:false};}
 function chatPresentation(chat){const state=chat.state||'disconnected';const tone=state==='receiving'?'good':chat.error||state==='error'?'bad':['connecting','reconnecting','login-required'].includes(state)||chat.loginRequired?'wait':'';return {label:chat.label||(state==='receiving'?'正在接收直播数据':chat.loginRequired?'等待扫码登录':chat.browserOpen?'浏览器已连接 · 等待消息':'弹幕未连接'),tone};}
-async function refreshPlatforms(){if(!authenticated)return;const value=await api('/api/platforms');snapshot.platforms=value.platforms||value;renderPlatformConnections();updateOutput(snapshot.media||{});}
+async function refreshPlatforms(){if(!authenticated)return;const epoch=projectEpoch,value=await api('/api/platforms');if(epoch!==projectEpoch)return;snapshot.platforms=value.platforms||value;renderPlatformConnections();updateOutput(snapshot.media||{});}
 function renderPlatformConnections(){
  const {catalog,connections,limit}=platformData();$('platform-count').textContent=`${connections.length} / ${limit} 个平台连接`;$('add-platform').disabled=connections.length>=limit;
  const signature=JSON.stringify([catalog,connections.map(item=>({...item,stream:streamDisplayFields(platformStream(item)),chat:{state:item.chat?.state,label:item.chat?.label,error:item.chat?.error,browserOpen:item.chat?.browserOpen,loginRequired:item.chat?.loginRequired,commentCount:item.chat?.commentCount,messageResponses:item.chat?.messageResponses,lastMessageAt:item.chat?.lastMessageAt}}))]);
@@ -160,7 +208,7 @@ function renderCues(config={}) {
 }
 let speechSignature='';
 function applyState(value) {
- if(!value?.config)return;snapshot=value;
+ if(!value?.config)return;const previousProject=projectData().activeId,nextProject=value.projects?.activeId;const changedProject=previousProject&&nextProject&&previousProject!==nextProject;if(changedProject)resetProjectView();snapshot=value;renderProjects();if(changedProject){void refreshAssets().catch(()=>{});if(!projectSwitchPending)notify('当前场次已切换为「'+(currentProject()?.name||'新场次')+'」');}
  const director=value.director||{},media=value.media||{},stage=readStage(director),paused=director.paused===true,running=director.running===true;
  $('current-stage').textContent=paused?'已暂停':director.stageLabel||stageLabels[stage]||stage;
  $('stage-description').textContent=director.reason||director.stageReason||director.stateMachine?.current?.reason||stageDescriptions[stage]||'完整口播结束后按优先级选择下一步。';
@@ -183,17 +231,18 @@ function applyState(value) {
  const text=typeof speech==='string'?speech:speech?.text;
  if(text&&text!==speechSignature){speechSignature=text;appendMessage('assistant',text);}
 }
-async function refreshState(){if(!authenticated)return;try{const value=await api('/api/state');applyState(stateValue(value));}catch(error){if(authenticated)throw error;}}
+async function refreshState(){if(!authenticated)return;const epoch=projectEpoch;try{const value=stateValue(await api('/api/state'));if(epoch===projectEpoch||value.projects?.activeId===projectData().activeId)applyState(value);}catch(error){if(authenticated)throw error;}}
 function appendMessage(role,text){const log=$('conversation-log');log.querySelector('.empty-copy')?.remove();const entry=document.createElement('div');entry.className='message '+(role==='user'?'user':role==='error'?'error-message':'assistant');const title=document.createElement('strong');title.textContent=role==='user'?'你':role==='error'?'提示':snapshot.config?.identity?.name||'小云';const paragraph=document.createElement('span');paragraph.textContent=String(text).slice(0,2400);entry.append(title,paragraph);log.append(entry);while(log.children.length>60)log.firstElementChild.remove();log.scrollTop=log.scrollHeight;}
 const seenHistory=new Set();
 function renderHistory(rows){for(const row of rows){const key=String(row.at)+':'+row.to+':'+row.reason;if(seenHistory.has(key))continue;seenHistory.add(key);logActivity((stageLabels[row.to]||row.to||'状态变化')+' · '+(row.reason||''));}if(seenHistory.size>300){const recent=[...seenHistory].slice(-100);seenHistory.clear();for(const key of recent)seenHistory.add(key);}}
 function logActivity(text,error=false){const log=$('activity-log');log.querySelector('.empty-copy')?.remove();const entry=document.createElement('div');entry.className='activity-entry'+(error?' error-entry':'');const time=document.createElement('time');time.textContent=new Intl.DateTimeFormat('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date());const message=document.createElement('span');message.textContent=String(text).slice(0,400);entry.append(time,message);log.prepend(entry);while(log.children.length>120)log.lastElementChild.remove();}
 async function runAction(action,extra={},button=null){
  if(button?.disabled)return;
- const wasDisabled=button?.disabled;if(button)button.disabled=true;
+ const wasDisabled=button?.disabled,origin=projectData().activeId;if(button)button.disabled=true;
  try{
+  if(['cue.play','speech.say','chat.ask','live.start','live.resume','live.restart','live.finish'].includes(action)&&monitorPreference!=='muted'){try{await startMonitor();}catch(error){if(monitorPreference!=='muted')throw error;}}requireCurrentProject(origin);
   if(['output.start','output.platform.start','output.platform.retry','live.start'].includes(action)&&configDirty)await saveSettings({quiet:true});
-  const result=await api('/api/action',{method:'POST',body:{action,...extra}});const value=stateValue(result);if(value?.config)applyState(value);else await refreshState();
+  const result=await api('/api/action',{method:'POST',body:{action,...extra},projectId:origin});requireCurrentProject(origin);const value=stateValue(result);if(value?.config)applyState(value);else await refreshState();
   const labels={'live.start':'开始 AI 播报','live.pause':'AI 已暂停','live.resume':'AI 继续播报','live.restart':'已安排从头播报','live.finish':'已安排整段播完后告别','live.stop':'AI 已停止','sale.queue':'秒杀提醒已排队','sale.hide':'已收起秒杀码','lottery.queue':'抽奖已排队','presentation.next':'已翻到下一页','presentation.prev':'已翻到上一页','presentation.first':'已回到第一页','output.start':'后台正在启动编码与输出','output.stop':'全部输出已停止','output.platform.start':'正在启动该平台推流','output.platform.stop':'已停止该平台推流','output.platform.retry':'正在重试该平台推流','platform.chat.connect':'正在连接该平台弹幕','platform.chat.login':'正在打开平台登录页','platform.chat.disconnect':'已断开该平台弹幕','bgm.set':'背景音乐已更新','cue.play':'固定口播已安排'};
   if(labels[action]){notify(labels[action]);logActivity(labels[action]);}return result;
  }catch(error){showError(error);throw error;}finally{if(button)button.disabled=wasDisabled||false;}
@@ -207,17 +256,18 @@ function installEvents(){
   else if(type==='state'||type==='snapshot')applyState(stateValue(payload));
   else if(type==='director'){snapshot.director=payload;applyState(snapshot);}
   else if(type==='media'){snapshot.media=payload;applyState(snapshot);}
+  else if(type==='projects'){acceptProjects(payload);}
   else if(type==='platforms'){snapshot.platforms=payload;renderPlatformConnections();updateOutput(snapshot.media||{});}
   else if(type==='meter'){if(snapshot.media)snapshot.media.audio=payload;updateMeter(payload);}
   else if(type==='speech'){const text=payload.text||payload.speech;if(text&&text!==speechSignature){speechSignature=text;appendMessage('assistant',text);}}
   else if(type==='error'){showError(payload.error||payload.message||'后台发生错误');}
   else if(type==='log'||type==='activity')logActivity(payload.message||payload.text||String(payload));
  }catch{ /* Ignore incomplete reconnect events; polling reconciles the shared state. */ }};
- eventSource.onmessage=accept;for(const name of ['state','snapshot','director','media','platforms','meter','speech','error','log','activity'])eventSource.addEventListener(name,accept);
+ eventSource.onmessage=accept;for(const name of ['state','snapshot','director','media','platforms','projects','meter','speech','error','log','activity'])eventSource.addEventListener(name,accept);
 }
-function loadPreview(id,empty,url){const preloader=new Image();preloader.onload=()=>{$(id).src=preloader.src;$(id).hidden=false;$(empty).hidden=true;};preloader.onerror=()=>{if(!$(id).getAttribute('src')){$(id).hidden=true;$(empty).hidden=false;}};preloader.src=url+'?t='+Date.now();}
-function updatePreviews(){if(authenticated&&activeTab==='director'&&!document.hidden){loadPreview('program-preview','program-empty','/api/frame.jpg');loadPreview('slide-preview','slide-empty','/api/slide.jpg');}}
-async function refreshAssets(){const value=await api('/api/assets');assets=Array.isArray(value)?value:value.assets||value.items||[];renderAssets();}
+function loadPreview(id,empty,url){const epoch=projectEpoch,preloader=new Image();preloader.onload=()=>{if(epoch!==projectEpoch)return;$(id).src=preloader.src;$(id).hidden=false;$(empty).hidden=true;};preloader.onerror=()=>{if(epoch!==projectEpoch)return;if(!$(id).getAttribute('src')){$(id).hidden=true;$(empty).hidden=false;}};preloader.src=url+'?t='+Date.now();}
+function updatePreviews(){if(authenticated&&workspaceOpen&&activeTab==='director'&&!document.hidden){loadPreview('program-preview','program-empty','/api/frame.jpg');loadPreview('slide-preview','slide-empty','/api/slide.jpg');}}
+async function refreshAssets(){const epoch=projectEpoch,value=await api('/api/assets');if(epoch!==projectEpoch)return;assets=Array.isArray(value)?value:value.assets||value.items||[];renderAssets();}
 function renderAssets(){
  $('asset-count').textContent=`${assets.length} 项`;
  $('asset-list').innerHTML=assets.length?assets.map(asset=>`<div class="asset-item"><span>${asset.type==='audio'?'♫':['html','pdf','presentation'].includes(asset.type)?'▤':'▧'}</span><div><strong>${escapeHtml(asset.name||asset.id)}</strong><small>${escapeHtml(asset.type||'素材')} · ${Number(asset.size||0)>1048576?(Number(asset.size)/1048576).toFixed(1)+' MB':Math.round(Number(asset.size||0)/1024)+' KB'}</small></div><a href="${escapeHtml(asset.url)}" target="_blank" rel="noopener">查看 ↗</a></div>`).join(''):'<p class="empty-copy">上传的素材仅保存在你的服务中。</p>';
@@ -241,8 +291,8 @@ function addCueEditor(cue={},dirty=true) {
  row.addEventListener('input',markDirty);row.addEventListener('change',markDirty);row.querySelector('[data-remove-cue]').addEventListener('click',()=>{row.remove();markDirty();});$('cue-editor').append(row);if(dirty)markDirty();
 }
 async function uploadFile(file,type,targetInput){
- const mime=file.type||'application/octet-stream';
- const value=await api('/api/upload',{method:'POST',body:file,headers:{'Content-Type':mime,'X-Filename':encodeURIComponent(file.name),'X-Asset-Type':type}});
+ const mime=file.type||'application/octet-stream',origin=projectData().activeId;
+ const value=await api('/api/upload',{method:'POST',body:file,headers:{'Content-Type':mime,'X-Filename':encodeURIComponent(file.name),'X-Asset-Type':type},projectId:origin});requireCurrentProject(origin);
  const asset=value.asset||{},url=value.url||asset.url;
  if(targetInput&&url){const input=document.querySelector(`[data-config="${targetInput}"]`);if(input){input.value=url;markDirty();}}
  await refreshAssets();notify(`已上传 ${file.name}`);return url;
@@ -263,13 +313,14 @@ async function refreshSetup(){
  if(!items.length){const media=snapshot.media||{};add('后台渲染',media.initialized,media.error||'请等待后端初始化');add('模型密钥',snapshot.secrets?.llmKey,'在 AI 与语音中配置供应商');add('语音合成',snapshot.config?.tts?.provider==='demo'||snapshot.secrets?.ttsKey||snapshot.secrets?.tencentSecretKey,snapshot.config?.tts?.provider==='demo'?'当前仅演示预录音':snapshot.config?.tts?.provider||'尚未配置');}
  $('setup-results').innerHTML=items.map(item=>`<div class="diagnostic-row ${item.ok?'':'warning'}"><i>${item.ok?'✓':'!'}</i><div>${escapeHtml(item.name)}<small>${escapeHtml(item.detail|| (item.ok?'已就绪':'等待配置或初始化'))}</small></div><span class="badge">${item.ok?'就绪':'待处理'}</span></div>`).join('');
 }
-function showLogin(){authenticated=false;eventSource?.close();eventSource=null;clearInterval(polling);clearInterval(previewTimer);clearInterval(setupTimer);clearInterval(channelsTimer);channelsFrameRevision++;$('channels-dialog').hidden=true;$('platform-picker').hidden=true;$('platform-editor').hidden=true;$('platform-key').value='';channelsFocus=null;activePlatformId=null;platformReturnFocus=null;void stopMicrophone();void stopMonitor();$('studio').hidden=true;$('login-screen').hidden=false;}
-async function enterStudio(){authenticated=true;$('login-screen').hidden=true;$('studio').hidden=false;await Promise.all([refreshState(),refreshAssets(),refreshPlatforms()]);installEvents();clearInterval(polling);polling=setInterval(()=>refreshState().catch(error=>{if(authenticated)logActivity(error.message,true);}),3000);clearInterval(previewTimer);previewTimer=setInterval(updatePreviews,800);clearInterval(setupTimer);setupTimer=setInterval(()=>{if(activeTab==='broadcast')refreshSetup().catch(()=>{});},12000);updatePreviews();$('comments-endpoint').textContent=location.origin+'/api/comments';$('metrics-endpoint').textContent=location.origin+'/api/metrics';}
+function showLogin(){authenticated=false;eventSource?.close();eventSource=null;clearInterval(polling);clearInterval(previewTimer);clearInterval(setupTimer);clearInterval(channelsTimer);channelsFrameRevision++;$('channels-dialog').hidden=true;$('platform-picker').hidden=true;$('platform-editor').hidden=true;$('platform-key').value='';for(const id of ['project-form-dialog','project-unsaved-dialog','project-busy-dialog','project-delete-dialog'])$(id).hidden=true;clearProjectForms();workspaceOpen=false;channelsFocus=null;activePlatformId=null;platformReturnFocus=null;void stopMicrophone();void stopMonitor();$('studio').hidden=true;$('login-screen').hidden=false;}
+async function enterStudio(){authenticated=true;$('login-screen').hidden=true;$('studio').hidden=false;await Promise.all([refreshState(),refreshProjects()]);showProjectHome();installEvents();clearInterval(polling);polling=setInterval(()=>refreshState().catch(error=>{if(authenticated)logActivity(error.message,true);}),3000);clearInterval(previewTimer);previewTimer=setInterval(updatePreviews,800);clearInterval(setupTimer);setupTimer=setInterval(()=>{if(activeTab==='broadcast')refreshSetup().catch(()=>{});},12000);updatePreviews();$('comments-endpoint').textContent=location.origin+'/api/comments';$('metrics-endpoint').textContent=location.origin+'/api/metrics';}
 
 async function refreshChannels() {
  if($('channels-dialog').hidden||!activePlatformId)return;
+ const epoch=projectEpoch;
  try{
-  const value=await api('/api/platforms'),platforms=value.platforms||value; snapshot.platforms=platforms;renderPlatformConnections();const connection=platformData().connections.find(item=>item.id===activePlatformId);if(!connection){closeChannels();notify('这个平台连接已被移除',true);return;}const status=connection.chat||{},catalog=platformCatalog(connection.platform),browserReady=status.browserOpen===true||status.connected===true;
+  const value=await api('/api/platforms'),platforms=value.platforms||value;if(epoch!==projectEpoch||$('channels-dialog').hidden)return;snapshot.platforms=platforms;renderPlatformConnections();const connection=platformData().connections.find(item=>item.id===activePlatformId);if(!connection){closeChannels();notify('这个平台连接已被移除',true);return;}const status=connection.chat||{},catalog=platformCatalog(connection.platform),browserReady=status.browserOpen===true||status.connected===true;
   $('channels-title').textContent=(connection.name||catalog.name)+' · 弹幕连接';$('channels-description').textContent=catalog.loginDescription||'浏览器在服务器上运行；请按平台要求完成登录。';$('channels-status').textContent=chatPresentation(status).label;$('channels-detail').textContent=status.reason||(status.commentCount>0?'累计收到 '+status.commentCount+' 条真实弹幕':'推流与弹幕独立连接；目前仅显示实际采集状态。');$('channels-error').textContent=status.error||'';$('channels-error').hidden=!status.error;$('connect-channels').disabled=['connecting','reconnecting'].includes(status.state);$('login-channels').disabled=['connecting','reconnecting'].includes(status.state);$('disconnect-channels').disabled=!browserReady&&!['connecting','reconnecting'].includes(status.state);
   const revision=++channelsFrameRevision;if(!browserReady){$('channels-image').removeAttribute('src');$('channels-image').hidden=true;$('channels-empty').hidden=false;return;}const image=new Image();image.onload=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').src=image.src;$('channels-image').hidden=false;$('channels-empty').hidden=true;};image.onerror=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').hidden=true;$('channels-empty').hidden=false;};image.src='/api/platforms/'+encodeURIComponent(activePlatformId)+'/frame.jpg?t='+Date.now();
  }catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}
@@ -277,43 +328,54 @@ async function refreshChannels() {
 async function platformChatAction(action){if(!activePlatformId)return;try{const result=await api('/api/action',{method:'POST',body:{action,id:activePlatformId}});const value=stateValue(result);if(value?.config)applyState(value);await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}}
 function openChannels(id){const connection=findPlatform(id);if(!connection)return;channelsFocus=document.activeElement;activePlatformId=id;$('channels-image').removeAttribute('src');$('channels-image').hidden=true;$('channels-empty').hidden=false;$('channels-error').hidden=true;$('channels-title').textContent=(connection.name||platformCatalog(connection.platform).name)+' · 弹幕连接';$('channels-dialog').hidden=false;$('close-channels').focus();void refreshChannels();clearInterval(channelsTimer);channelsTimer=setInterval(refreshChannels,2000);if(!connection.chat?.browserOpen)void platformChatAction('platform.chat.connect');}
 function closeChannels(){ $('channels-dialog').hidden=true;clearInterval(channelsTimer);channelsTimer=null;channelsFrameRevision++;activePlatformId=null;if(channelsFocus?.isConnected)channelsFocus.focus();else $('add-platform').focus();channelsFocus=null; }
-/** Optional operator headphones tap; the encoded audio remains owned by the server. */
-function clearMonitorNodes() {
- if(!audioMonitor)return;
- for(const source of audioMonitor.nodes){try{source.stop();}catch{/* Already ended sources require no cleanup. */}}
- audioMonitor.nodes.clear();audioMonitor.nextTime=audioMonitor.context.currentTime+.08;
+/** Local playback is independent of server recording and platform output. */
+function setMonitorPreference(value){monitorPreference=value;localStorage.setItem('xiaoyun-local-sound',value);}
+function setMonitorState(state,message=''){
+ monitorState=state;const label={ready:'已开启',connecting:'正在连接',error:'出错',muted:monitorPreference==='muted'?'静音':'未开启'}[state]||'未开启';$('monitor-state').textContent=label;$('monitor-toggle').textContent='本机声音 · '+label;$('monitor-toggle').dataset.state=state;$('monitor-toggle').classList.toggle('listening',state==='ready');$('monitor-toggle').setAttribute('aria-pressed',String(state==='ready'));$('monitor-mute').hidden=state!=='error';$('monitor-description').classList.toggle('is-error',state==='error');
+ const defaults={ready:'本机声音已开启。若仍无声，请检查系统音量与声音输出设备；推流和录制独立运行。',connecting:'正在连接本机声音，等待浏览器允许播放；推流和录制不受影响。',error:'本机声音暂不可用，请点击重试；也可选择本机静音，仅保留服务端输出。',muted:monitorPreference==='muted'?'本浏览器已静音；服务端口播、推流和录制照常进行。点击上方按钮可恢复本机声音。':'点击口播时会自动开启本机声音；只影响这台浏览器，不影响推流或录制。'};$('monitor-description').textContent=message||defaults[state];
 }
-function connectMonitor() {
- if(!monitorEnabled||!audioMonitor)return;
- const url=new URL('/api/monitor',location.href);url.protocol=location.protocol==='https:'?'wss:':'ws:';
- const socket=new WebSocket(url);socket.binaryType='arraybuffer';audioMonitor.socket=socket;audioMonitor.format=null;
+function clearMonitorNodes(monitor=audioMonitor){
+ if(!monitor)return;for(const source of monitor.nodes){try{source.stop();}catch{/* A node that already ended has no remaining playback. */}source.disconnect();}monitor.nodes.clear();monitor.nextTime=monitor.context.currentTime+.08;
+}
+function failMonitor(monitor,error){
+ if(audioMonitor!==monitor)return;clearTimeout(monitor.timeout);clearTimeout(monitorReconnect);monitorReconnect=null;monitor.ready=false;monitor.settled=true;monitor.reject?.(error);clearMonitorNodes(monitor);monitor.socket?.close();monitor.context.onstatechange=null;audioMonitor=null;monitorEnabled=false;void monitor.context.close().catch(()=>{});setMonitorState('error',error.message);
+}
+function armMonitorReady(monitor){
+ if(monitor.promise&&!monitor.settled)return monitor.promise;monitor.settled=false;monitor.promise=new Promise((resolve,reject)=>{monitor.resolve=resolve;monitor.reject=reject;});monitor.promise.catch(()=>{});clearTimeout(monitor.timeout);monitor.timeout=setTimeout(()=>failMonitor(monitor,new Error('本机声音连接超时。请点击「本机声音」重试，或选择仅本机静音。')),8000);return monitor.promise;
+}
+function completeMonitorReady(monitor){
+ if(audioMonitor!==monitor||!monitorEnabled||monitor.socket?.readyState!==WebSocket.OPEN||!monitor.format||monitor.format.projectId&&monitor.format.projectId!==projectData().activeId||monitor.context.state!=='running')return;clearTimeout(monitor.timeout);monitor.ready=true;monitor.settled=true;monitor.reconnects=0;monitor.resolve?.(monitor);setMonitorState('ready');
+}
+function connectMonitor(monitor=audioMonitor){
+ if(!monitorEnabled||!monitor||audioMonitor!==monitor)return;armMonitorReady(monitor);const url=new URL('/api/monitor',location.href);url.protocol=location.protocol==='https:'?'wss:':'ws:';const socket=new WebSocket(url);socket.binaryType='arraybuffer';monitor.socket=socket;monitor.format=null;
+ socket.onopen=()=>completeMonitorReady(monitor);
  socket.onmessage=event=>{
-  if(!monitorEnabled||audioMonitor?.socket!==socket)return;
-  if(typeof event.data==='string'){
-   try{const format=JSON.parse(event.data);if(format.format==='s16le'&&format.sampleRate===48000&&format.channels===2)audioMonitor.format=format;else throw new Error();}catch{notify('音频监听格式无法识别',true);void stopMonitor();}return;
-  }
-  if(!audioMonitor.format||!(event.data instanceof ArrayBuffer)||event.data.byteLength%4||event.data.byteLength>384000)return;
-  const {context,nodes}=audioMonitor,count=event.data.byteLength/4,view=new DataView(event.data),buffer=context.createBuffer(2,count,48000);
-  for(let channel=0;channel<2;channel++){const samples=buffer.getChannelData(channel);for(let index=0;index<count;index++)samples[index]=view.getInt16((index*2+channel)*2,true)/32768;}
-  if(audioMonitor.nextTime<context.currentTime-.1||audioMonitor.nextTime>context.currentTime+.6)clearMonitorNodes();
-  const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);nodes.add(source);source.onended=()=>{nodes.delete(source);source.disconnect();};
-  const start=Math.max(context.currentTime+.035,audioMonitor.nextTime);source.start(start);audioMonitor.nextTime=start+count/48000;
+  if(!monitorEnabled||audioMonitor!==monitor||monitor.socket!==socket)return;
+  if(typeof event.data==='string'){try{const format=JSON.parse(event.data);if(format.format!=='s16le'||format.sampleRate!==48000||format.channels!==2)throw new Error('本机声音格式无法识别，请重新连接。');monitor.format=format;completeMonitorReady(monitor);}catch(error){failMonitor(monitor,error instanceof Error?error:new Error('本机声音格式无法识别。'));}return;}
+  if(!monitor.ready||!monitor.format||monitor.format.projectId&&monitor.format.projectId!==projectData().activeId||!(event.data instanceof ArrayBuffer)||event.data.byteLength%4||event.data.byteLength>384000)return;
+  if(monitor.context.state!=='running'){clearMonitorNodes(monitor);return;}
+  const {context,nodes}=monitor,count=event.data.byteLength/4,view=new DataView(event.data),buffer=context.createBuffer(2,count,48000);for(let channel=0;channel<2;channel++){const samples=buffer.getChannelData(channel);for(let index=0;index<count;index++)samples[index]=view.getInt16((index*2+channel)*2,true)/32768;}
+  if(monitor.nextTime<context.currentTime-.1||monitor.nextTime>context.currentTime+.6)clearMonitorNodes(monitor);const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);nodes.add(source);source.onended=()=>{nodes.delete(source);source.disconnect();};const start=Math.max(context.currentTime+.035,monitor.nextTime);source.start(start);monitor.nextTime=start+count/48000;
  };
- socket.onclose=()=>{if(monitorEnabled&&audioMonitor?.socket===socket){clearMonitorNodes();$('monitor-toggle').textContent='♬ 监听重连中…';monitorReconnect=setTimeout(connectMonitor,2500);}};
- socket.onopen=()=>{if(monitorEnabled)$('monitor-toggle').textContent='♬ 关闭声音监听';};
+ socket.onclose=()=>{if(!monitorEnabled||audioMonitor!==monitor||monitor.socket!==socket)return;monitor.ready=false;monitor.format=null;monitor.socket=null;clearMonitorNodes(monitor);if(monitor.reconnects>=3){failMonitor(monitor,new Error('本机声音连接中断。请点击「本机声音」重试；服务端输出不受影响。'));return;}monitor.reconnects++;armMonitorReady(monitor);setMonitorState('connecting','本机声音连接中断，正在重新连接；不会重复提交已经播放的口播。');clearTimeout(monitorReconnect);monitorReconnect=setTimeout(()=>connectMonitor(monitor),2500);};
+ socket.onerror=()=>{/* The close event owns reconnection and the bounded ready timeout. */};
 }
-async function startMonitor() {
- if(monitorEnabled)return;
- const AudioContext=window.AudioContext||window.webkitAudioContext,context=new AudioContext({sampleRate:48000});await context.resume();
- audioMonitor={context,socket:null,nodes:new Set(),nextTime:context.currentTime+.08,format:null};monitorEnabled=true;
- $('monitor-toggle').classList.add('listening');$('monitor-toggle').setAttribute('aria-pressed','true');connectMonitor();
- notify('已开启耳机监听；关闭监听不会停止直播声音');
+/** Call before the first await in a click or submit handler to preserve browser activation. */
+function startMonitor(){
+ setMonitorPreference('on');let monitor=audioMonitor;
+ if(!monitor||monitor.context.state==='closed'){
+  const AudioContext=window.AudioContext||window.webkitAudioContext;if(!AudioContext)throw new Error('当前浏览器不支持本机声音播放，请换用支持 Web Audio 的浏览器。');const context=new AudioContext({sampleRate:48000});monitor={context,socket:null,nodes:new Set(),nextTime:context.currentTime+.08,format:null,ready:false,promise:null,settled:true,timeout:null,reconnects:0};audioMonitor=monitor;monitorEnabled=true;
+  context.onstatechange=()=>{if(audioMonitor!==monitor||!monitorEnabled)return;if(context.state==='running')completeMonitorReady(monitor);else if(context.state!=='closed'){monitor.ready=false;clearMonitorNodes(monitor);setMonitorState('error','浏览器暂停了本机声音。请点击「本机声音」恢复；推流与录制不受影响。');}};
+ }
+ monitorEnabled=true;let resume;try{resume=monitor.context.resume();}catch(error){failMonitor(monitor,new Error('浏览器未能开启本机声音：'+error.message));return Promise.reject(error);}
+ if(monitor.ready&&monitor.context.state==='running'&&monitor.socket?.readyState===WebSocket.OPEN&&monitor.format&&(!monitor.format.projectId||monitor.format.projectId===projectData().activeId)){Promise.resolve(resume).catch(error=>failMonitor(monitor,error));return Promise.resolve(monitor);}
+ const ready=armMonitorReady(monitor);setMonitorState('connecting');if(!monitor.socket||monitor.socket.readyState===WebSocket.CLOSED||monitor.socket.readyState===WebSocket.CLOSING){clearTimeout(monitorReconnect);connectMonitor(monitor);}Promise.resolve(resume).then(()=>completeMonitorReady(monitor)).catch(error=>failMonitor(monitor,new Error('浏览器未能开启本机声音：'+error.message)));return ready;
 }
-async function stopMonitor() {
- monitorEnabled=false;clearTimeout(monitorReconnect);monitorReconnect=null;
- if(audioMonitor){clearMonitorNodes();audioMonitor.socket?.close();await audioMonitor.context.close();audioMonitor=null;}
- $('monitor-toggle').textContent='♬ 开启声音监听';$('monitor-toggle').classList.remove('listening');$('monitor-toggle').setAttribute('aria-pressed','false');
+async function stopMonitor({muted=false}={}){
+ if(muted)setMonitorPreference('muted');monitorEnabled=false;clearTimeout(monitorReconnect);monitorReconnect=null;const monitor=audioMonitor;audioMonitor=null;
+ if(monitor){clearTimeout(monitor.timeout);monitor.ready=false;monitor.settled=true;monitor.reject?.(new Error(muted?'本机声音已静音。':'本机声音已关闭。'));clearMonitorNodes(monitor);monitor.socket?.close();monitor.context.onstatechange=null;await monitor.context.close();}setMonitorState('muted');
 }
+
 /** Continuous PCM VAD; only completed, sufficiently voiced phrases are submitted. */
 async function refreshDevices(requestPermission=false){
  if(!navigator.mediaDevices?.enumerateDevices)throw new Error('当前浏览器无法访问麦克风，请使用 HTTPS 或本机 localhost。');
@@ -327,8 +389,9 @@ async function sendUtterance(parts,sampleRate){if(!microphoneEnabled||microphone
 function resetPhrase(){recordingParts=[];preRoll=[];phraseStarted=0;lastVoicedAt=0;voicedDuration=0;phraseActive=false;}
 async function startMicrophone(){
  if(!navigator.mediaDevices?.getUserMedia)throw new Error('麦克风需要 HTTPS 或 localhost，请检查访问地址。');
+ const origin=projectData().activeId,soundReady=monitorPreference!=='muted'?startMonitor():Promise.resolve();soundReady.catch(()=>{});
  const deviceId=$('microphone-device').value;
- const stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:deviceId?{exact:deviceId}:undefined,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+ await soundReady;requireCurrentProject(origin);const stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:deviceId?{exact:deviceId}:undefined,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});if(origin!==projectData().activeId||!authenticated){stream.getTracks().forEach(track=>track.stop());requireCurrentProject(origin);throw new Error('语音输入已取消。');}
  const AudioContext=window.AudioContext||window.webkitAudioContext,context=new AudioContext();await context.resume();
  const source=context.createMediaStreamSource(stream),processor=context.createScriptProcessor(4096,1,1),mute=context.createGain();mute.gain.value=0;source.connect(processor);processor.connect(mute);mute.connect(context.destination);
  microphone={stream,context,processor,source,mute};microphoneEnabled=true;resetPhrase();
@@ -346,6 +409,22 @@ async function startMicrophone(){
 }
 async function stopMicrophone(){microphoneEnabled=false;asrAbort?.abort();resetPhrase();if(microphone){microphone.processor.onaudioprocess=null;microphone.source.disconnect();microphone.processor.disconnect();microphone.mute.disconnect();microphone.stream.getTracks().forEach(track=>track.stop());await microphone.context.close();microphone=null;}$('microphone-toggle').textContent='🎙 开启语音';$('microphone-toggle').classList.remove('listening');$('microphone-state').textContent='麦克风已关闭';$('microphone-meter').style.width='0%';$('microphone-device').disabled=false;}
 
+$('new-project').addEventListener('click',()=>openProjectForm('create'));
+$('copy-current-project').addEventListener('click',()=>openProjectForm('copy'));
+$('refresh-projects').addEventListener('click',()=>refreshProjects().catch(showError));
+$('open-projects').addEventListener('click',showProjectHome);
+$('rename-current-project').addEventListener('click',()=>openProjectForm('rename',projectData().activeId));
+$('project-list').addEventListener('click',event=>{const button=event.target.closest('button');if(!button||button.disabled)return;if(button.hasAttribute('data-project-open'))requestProjectOpen(button.dataset.projectOpen);else if(button.hasAttribute('data-project-rename'))openProjectForm('rename',button.dataset.projectRename);else if(button.hasAttribute('data-project-delete'))openProjectDelete(button.dataset.projectDelete);else if(button.hasAttribute('data-project-create'))openProjectForm('create');});
+$('project-form').addEventListener('submit',submitProjectForm);
+for(const id of ['close-project-form','cancel-project-form'])$(id).addEventListener('click',closeProjectForm);
+for(const id of ['close-project-unsaved','project-unsaved-cancel'])$(id).addEventListener('click',closeProjectUnsaved);
+$('project-unsaved-save').addEventListener('click',()=>continueAfterUnsaved(true));
+$('project-unsaved-discard').addEventListener('click',()=>continueAfterUnsaved(false));
+for(const id of ['close-project-busy','project-busy-cancel'])$(id).addEventListener('click',closeProjectBusy);
+$('project-force-switch').addEventListener('click',()=>{const id=pendingSwitchProjectId;if(id)void activateProject(id,true);});
+for(const id of ['close-project-delete','project-delete-cancel'])$(id).addEventListener('click',closeProjectDelete);
+$('project-delete-confirm').addEventListener('click',deleteProject);
+for(const [id,close]of [['project-form-dialog',closeProjectForm],['project-unsaved-dialog',closeProjectUnsaved],['project-busy-dialog',closeProjectBusy],['project-delete-dialog',closeProjectDelete]]){$(id).addEventListener('click',event=>{if(event.target===$(id))close();});$(id).addEventListener('keydown',event=>trapModalKeys(event,close));}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();$('login-error').textContent='';const button=event.submitter;button.disabled=true;try{await api('/api/login',{method:'POST',body:{password:$('login-password').value}});$('login-password').value='';await enterStudio();}catch(error){$('login-error').textContent=error.message;}finally{button.disabled=false;}});
 $('logout').addEventListener('click',async()=>{try{await stopMicrophone();await stopMonitor();await api('/api/logout',{method:'POST',body:{}});showLogin();}catch(error){showError(error);}});
 $$('[data-tab]').forEach(button=>button.addEventListener('click',()=>useTab(button.dataset.tab)));$$('[data-tab-target]').forEach(button=>button.addEventListener('click',()=>useTab(button.dataset.tabTarget)));
@@ -355,7 +434,7 @@ $$('.save-settings').forEach(button=>button.addEventListener('click',async()=>{b
 $$('[data-layout]').forEach(button=>button.addEventListener('click',async()=>{try{const patch={scene:{layout:{...(snapshot.config?.scene?.layout||{}),mode:button.dataset.layout}}};const result=await api('/api/config',{method:'PUT',body:{patch}});const value=stateValue(result);if(value?.config)applyState(value);else await refreshState();notify('节目场景已更新');}catch(error){showError(error);}}));
 $('load-presentation').addEventListener('click',async()=>{try{await saveSettings({quiet:true});const url=document.querySelector('[data-config="presentation.url"]').value.trim();await runAction('presentation.open',{url});notify('演示页已载入后台');}catch(error){showError(error);}});
 $$('.asset-upload').forEach(input=>input.addEventListener('change',async()=>{const file=input.files?.[0];if(!file)return;input.disabled=true;try{const type=/\.pdf$/i.test(file.name)?'pdf':/\.html?$/i.test(file.name)?'html':file.type.startsWith('audio/')||/\.(mp3|wav|ogg|m4a)$/i.test(file.name)?'audio':'image';await uploadFile(file,type,input.dataset.uploadTarget);}catch(error){showError(error);}finally{input.value='';input.disabled=false;}}));
-$('notes-upload').addEventListener('change',async event=>{const file=event.target.files?.[0];if(!file)return;try{document.querySelector('[data-config="presentation.notes"]').value=await file.text();markDirty();notify('笔记已填入，保存设置后生效');}catch(error){showError(error);}finally{event.target.value='';}});
+$('notes-upload').addEventListener('change',async event=>{const file=event.target.files?.[0],origin=projectData().activeId;if(!file)return;try{const text=await file.text();requireCurrentProject(origin);document.querySelector('[data-config="presentation.notes"]').value=text;markDirty();notify('笔记已填入，保存设置后生效');}catch(error){showError(error);}finally{event.target.value='';}});
 $('chat-form').addEventListener('submit',async event=>{event.preventDefault();const text=$('chat-text').value.trim();if(!text)return;appendMessage('user',text);$('chat-text').value='';try{await runAction('chat.ask',{text},event.submitter);}catch{}});
 $('chat-text').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('chat-form').requestSubmit();}});
 $('say-form').addEventListener('submit',async event=>{event.preventDefault();const text=$('say-text').value.trim();if(!text)return;try{await runAction('speech.say',{text},event.submitter);$('say-text').value='';}catch{}});
@@ -382,10 +461,11 @@ $('login-channels').addEventListener('click',()=>platformChatAction('platform.ch
 $('disconnect-channels').addEventListener('click',()=>platformChatAction('platform.chat.disconnect'));
 $('channels-image').addEventListener('click',async event=>{const image=$('channels-image'),rect=image.getBoundingClientRect();if(!activePlatformId||!image.naturalWidth||!image.naturalHeight)return;const x=Math.round((event.clientX-rect.left)*image.naturalWidth/rect.width),y=Math.round((event.clientY-rect.top)*image.naturalHeight/rect.height);try{await api('/api/action',{method:'POST',body:{action:'platform.chat.click',id:activePlatformId,x,y}});await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}});
 $('refresh-setup').addEventListener('click',()=>refreshSetup().catch(showError));
-$('monitor-toggle').addEventListener('click',async()=>{try{if(monitorEnabled)await stopMonitor();else await startMonitor();}catch(error){await stopMonitor();showError(error);}});
+$('monitor-toggle').addEventListener('click',async()=>{try{if(monitorEnabled&&monitorState!=='error')await stopMonitor({muted:true});else await startMonitor();}catch(error){setMonitorState('error',error.message);showError(error);}});
+$('monitor-mute').addEventListener('click',()=>stopMonitor({muted:true}).catch(showError));
 $('microphone-toggle').addEventListener('click',async()=>{try{if(microphoneEnabled)await stopMicrophone();else await startMicrophone();}catch(error){await stopMicrophone();showError(error);}});
 $('refresh-devices').addEventListener('click',()=>refreshDevices(true).catch(showError));
 $('vad-threshold').value=localStorage.getItem('xiaoyun-vad-threshold')||'0.03';$('vad-threshold').addEventListener('input',()=>{localStorage.setItem('xiaoyun-vad-threshold',$('vad-threshold').value);updateRangeLabels();});
 addEventListener('pagehide',()=>{eventSource?.close();clearInterval(polling);clearInterval(previewTimer);clearInterval(setupTimer);clearInterval(channelsTimer);void stopMicrophone();void stopMonitor();});
 async function boot(){try{const session=await api('/api/session');if(session.authenticated)await enterStudio();else showLogin();}catch(error){showLogin();$('login-error').textContent=error.message;}}
-updateRangeLabels();boot();
+updateRangeLabels();setMonitorState('muted');boot();

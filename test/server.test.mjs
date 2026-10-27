@@ -23,8 +23,8 @@ test('server secrets persist separately and never appear in state, events or err
  const {app,request,cookie}=await fixture(t),key='fixture-stream-secret-hidden-123456'
  const result=await request('/api/config',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({patch:{identity:{name:'测试主播'}},secrets:{streamKey:key,llmKey:'fixture-model-secret-987654'}})})
  assert.equal(result.status,200);const text=await result.text();assert.ok(!text.includes(key));assert.match(text,/"streamKey":true/)
- assert.ok(!readFileSync(join(app.dataDir,'settings.json'),'utf8').includes(key))
- assert.ok(readFileSync(join(app.dataDir,'secrets.json'),'utf8').includes(key))
+ assert.ok(!readFileSync(app.store.file,'utf8').includes(key))
+ assert.ok(readFileSync(app.store.secretFile,'utf8').includes(key))
  assert.equal(app.store.redact('bad '+key),'bad [redacted]')
 })
 test('render tokens grant only scene and asset reads, never administrator APIs',async t=>{
