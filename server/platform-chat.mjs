@@ -38,37 +38,42 @@ export function readPlatformLoginState(platform){
  const text=document.body?.innerText||'',visible=element=>{const style=getComputedStyle(element);return style.display!=='none'&&style.visibility!=='hidden'&&element.getClientRects().length>0}
  const panels=[...document.querySelectorAll('[role="dialog"],[class*="login-panel"],[class*="loginPanel"],[class*="login-modal"],[class*="loginModal"],[class*="passport"],.bili-mini-login-wrapper')].filter(visible)
  const loginText=/扫码登录|二维码登录|登录视频号助手|请使用.{0,12}扫码|请用.{0,12}扫码|微信扫码登录|登录后.{0,10}(?:观看|查看|互动)/
- const loginVisible=/\/login(?:[./]|$)/.test(location.pathname)||loginText.test(text)||panels.some(element=>/登录/.test(element.innerText||''))
- const qrVisible=loginVisible&&[...document.querySelectorAll('img,canvas')].some(element=>{
-  if(!visible(element))return false
+ const dedicatedLogin=/\/login(?:[./]|$)/.test(location.pathname)
+ const loginPanelVisible=dedicatedLogin||panels.some(element=>/登录/.test(element.innerText||''))||[...document.querySelectorAll('input[type="password"],input[type="tel"],input[placeholder*="手机号"],input[placeholder*="验证码"]')].some(visible)
+ const loginVisible=loginPanelVisible||loginText.test(text)
+ const qrGraphics={loaded:0,pending:0,unreadable:0,patterns:0}
+ if(loginVisible)for(const element of document.querySelectorAll('img,canvas')){
+  if(!visible(element))continue
   const rect=element.getBoundingClientRect(),side=Math.min(rect.width,rect.height)
-  if(side<80||Math.max(rect.width,rect.height)/side>1.3)return false
-  if(!/\/login(?:[./]|$)/.test(location.pathname)&&!element.closest('[role="dialog"],[class*="login"],[class*="Login"],[class*="passport"],[class*="qrcode"],[class*="qr-code"],[id*="qrcode"]'))return false
-  if(element.tagName==='IMG'&&(!element.complete||element.naturalWidth<80||element.naturalHeight<80))return false
+  if(side<80||Math.max(rect.width,rect.height)/side>1.3)continue
+  if(!dedicatedLogin&&!element.closest('[role="dialog"],[class*="login"],[class*="Login"],[class*="passport"],[class*="qrcode"],[class*="qr-code"],[id*="qrcode"]'))continue
+  if(element.tagName==='IMG'&&(!element.complete||element.naturalWidth<80||element.naturalHeight<80)){qrGraphics.pending++;continue}
+  qrGraphics.loaded++
   // Text and placeholder logos do not prove that a QR image has loaded.
   try{
    const canvas=document.createElement('canvas');canvas.width=96;canvas.height=96
-   const context=canvas.getContext('2d',{willReadFrequently:true});if(!context)return false
+   const context=canvas.getContext('2d',{willReadFrequently:true});if(!context){qrGraphics.unreadable++;continue}
+   context.imageSmoothingEnabled=false
    context.fillStyle='#fff';context.fillRect(0,0,96,96);context.drawImage(element,0,0,96,96)
    const pixels=context.getImageData(0,0,96,96).data;let dark=0,light=0
    for(let i=0;i<pixels.length;i+=4){const low=Math.min(pixels[i],pixels[i+1],pixels[i+2]),high=Math.max(pixels[i],pixels[i+1],pixels[i+2]);if(high-low>35)continue;if(high<80)dark++;else if(low>215)light++}
-   const count=96*96;return dark/count>.10&&dark/count<.65&&light/count>.20&&(dark+light)/count>.80
-  }catch{return false} // Cross-origin or not-yet-decoded images remain unverified.
- })
+   const count=96*96;if(dark/count>.10&&dark/count<.65&&light/count>.20&&(dark+light)/count>.80)qrGraphics.patterns++
+  }catch{qrGraphics.unreadable++} // Cross-origin or not-yet-decoded images remain unverified.
+ }
+ const qrVisible=qrGraphics.patterns>0
  const verificationRequired=/请完成安全验证|拖动滑块|安全验证中|请依次点击|请验证后继续|访问过于频繁|操作过于频繁/.test(text)
  const ended=/^(直播已结束|主播已下播|直播结束了|主播暂未开播|本场直播已结束)$/.test(text.trim())||[...document.querySelectorAll('[class*="live-end"],[class*="liveEnd"],[class*="offline"]')].some(element=>visible(element)&&/直播已结束|主播已下播|暂未开播/.test(element.innerText||''))
- return {path:location.pathname,host:location.hostname,loginVisible,qrVisible,verificationRequired,ended,platform}
+ return {path:location.pathname,host:location.hostname,loginVisible,loginPanelVisible,qrVisible,qrGraphics,verificationRequired,ended,platform}
 }
 
 /** Select only visible login/QR controls on an official page; never a live interaction control. */
-export function openPlatformQrLogin(){
+export function openPlatformQrLogin({panelOpen=false}={}){
  const visible=element=>element.getClientRects().length&&getComputedStyle(element).visibility!=='hidden'
  const candidates=[...document.querySelectorAll('button,a,[role="button"],span,div')].filter(element=>visible(element)&&element.children.length<4)
- const inLoginPanel=/扫码登录|二维码登录|验证码登录|密码登录|手机号登录|快手APP登录/.test(document.body?.innerText||'')
  const patterns=[/^(?:扫码登录|二维码登录|快手APP登录)$/]
- if(!inLoginPanel)patterns.push(/^(?:登录|立即登录|登录\s*[\/／]\s*注册|登录后观看)$/)
+ if(!panelOpen)patterns.push(/^(?:登录|立即登录|登录\s*[\/／]\s*注册|登录后观看)$/)
  for(const pattern of patterns){
-  const found=candidates.find(element=>pattern.test((element.innerText||element.getAttribute('aria-label')||'').trim()))
+  const found=candidates.find(element=>pattern.test((element.innerText||element.getAttribute('aria-label')||'').trim())&&!(element.getAttribute('aria-selected')==='true'||/(?:^|\s)(?:active|selected|current)(?:\s|$)/.test(String(element.className))))
   if(found){found.scrollIntoView({block:'center',inline:'center'});const rect=found.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}}
  }
  return false
@@ -90,12 +95,12 @@ export class PlatformChatCollector {
   this.definition=PLATFORMS[this.connection.platform];this.dataDir=join(resolve(dataDir),'platforms',this.connection.id);this.onComments=onComments;this.onMetrics=onMetrics;this.onStatus=onStatus;this.launch=launch
   this.browser=null;this.page=null;this.frame=null;this.timer=null;this.pending=null;this.wanted=false;this.closed=false;this.generation=0;this.capturing=false;this.navigating=false;this.loginRequested=false;this.mode='room';this.authenticated=false
   this.state='disconnected';this.reason='等待连接';this.error='';this.loginRequired=false;this.qrVisible=false;this.messageResponses=0;this.commentCount=0;this.lastMessageAt=0;this.lastDataAt=0;this.lastCommentAt=0;this.lastMetricsAt=0;this.capturedAt=0;this.pagePath='';this.fields={};this.platformState='unknown';this.verificationRequired=false;this.captureFailed=false;this.decodeWarning=''
-  this.delegateQrVisible=null;this.attached=new WeakSet();this.sessions=new Set();this.seen=new Set();this.pendingFrames=0;this.reconnects=0;this.reconnectTimer=null;this.lastDeliveryAt=0
+  this.delegateQrVisible=null;this.loginPage={};this.attached=new WeakSet();this.sessions=new Set();this.seen=new Set();this.pendingFrames=0;this.reconnects=0;this.reconnectTimer=null;this.lastDeliveryAt=0
   if(this.connection.platform==='wechat')this.delegate=new ChannelsCollector({dataDir:this.dataDir,launch,onComments:items=>this.onComments(items),onMetrics:value=>this.onMetrics(value),onStatus:()=>this.emit()})
  }
  status(){
   const base=this.delegate?.status()||{state:this.state,label:LABELS[this.state],reason:this.reason,browserOpen:Boolean(this.browser?.connected&&visiblePage(this.page)),loginRequired:this.loginRequired,authenticated:this.authenticated,qrVisible:this.qrVisible,messageResponses:this.messageResponses,commentCount:this.commentCount,lastMessageAt:this.lastMessageAt,lastCommentAt:this.lastCommentAt,lastMetricsAt:this.lastMetricsAt,error:this.error,capturedAt:this.capturedAt,pagePath:this.pagePath,width:WIDTH,height:HEIGHT,platformState:this.platformState,reconnects:this.reconnects,metrics:Object.fromEntries(Object.entries(this.fields).filter(([,entry])=>Date.now()-entry.at<=30000))}
-  return {...base,...(this.delegate?{qrVisible:this.delegateQrVisible}:{}),connectionId:this.connection.id,platform:this.connection.platform,name:this.connection.name,roomUrl:this.connection.roomUrl,capability:{mode:this.delegate?'official-backend-responses':'passive-browser-cdp',readOnly:true,qrLogin:true,metrics:this.definition.metrics,liveAccountVerified:false,note:this.delegate?'需要扫码进入实际直播后台；公开后台响应可能调整。':'按平台实际返回读取弹幕；匿名昵称可能打码，验证码或平台限制需要操作者处理。'}}
+  return {...base,...(this.delegate?{qrVisible:this.delegateQrVisible}:{}),loginPage:this.loginPage,connectionId:this.connection.id,platform:this.connection.platform,name:this.connection.name,roomUrl:this.connection.roomUrl,capability:{mode:this.delegate?'official-backend-responses':'passive-browser-cdp',readOnly:true,qrLogin:true,metrics:this.definition.metrics,liveAccountVerified:false,note:this.delegate?'需要扫码进入实际直播后台；公开后台响应可能调整。':'按平台实际返回读取弹幕；匿名昵称可能打码，验证码或平台限制需要操作者处理。'}}
  }
  getFrame(){return this.delegate?this.delegate.getFrame():this.frame}
  emit(){this.onStatus(this.status())}
@@ -182,9 +187,9 @@ export class PlatformChatCollector {
   finally{if(generation===this.generation)this.navigating=false}
  }
  async _showQr(generation){
-  const token={cancelled:false}
+  const token={cancelled:false},deadline=Date.now()+28000,clickedTabs=new Set(),lastEntryClick=new Map()
   const scan=async()=>{
-   for(let attempt=0;attempt<16;attempt++){
+   while(Date.now()<deadline){
     if(token.cancelled||generation!==this.generation||!this.wanted||!visiblePage(this.page))return
     for(const frame of (this.page.frames?.()||[this.page]).slice(0,6)){
      if(token.cancelled||generation!==this.generation||!this.wanted)return
@@ -193,14 +198,19 @@ export class PlatformChatCollector {
      if(token.cancelled||generation!==this.generation||!this.wanted)return
      if(state?.qrVisible)return
      if(state?.verificationRequired)return
-     const point=await frame.evaluate(openPlatformQrLogin)
+     const point=await frame.evaluate(openPlatformQrLogin,{panelOpen:Boolean(state?.loginPanelVisible)})
      if(token.cancelled||generation!==this.generation||!this.wanted)return
-     if(point&&typeof point==='object'&&Number.isFinite(point.x)&&Number.isFinite(point.y))await this._clickFrameLogin(frame,point)
+     if(point&&typeof point==='object'&&Number.isFinite(point.x)&&Number.isFinite(point.y)){
+      const key=frame.url()+':'+Math.round(point.x)+':'+Math.round(point.y),now=Date.now()
+      if(state?.loginPanelVisible){if(clickedTabs.has(key))continue;clickedTabs.add(key)}
+      else{if(now-(lastEntryClick.get(key)||0)<2000)continue;lastEntryClick.set(key,now)}
+      await this._clickFrameLogin(frame,point)
+     }
     }
-    await delay(400)
+    await delay(500)
    }
   }
-  try{await browserDeadline(scan(),10000,'平台扫码登录页面准备超时，请查看页面提示')}
+  try{await browserDeadline(scan(),30000,'平台扫码登录页面准备超时，请查看页面提示')}
   finally{token.cancelled=true}
  }
  async _clickFrameLogin(frame,point){
@@ -215,7 +225,7 @@ export class PlatformChatCollector {
   const page=this.delegate?.page
   if(this.closed||!page||page.isClosed()||!platformNavigationAllowed('wechat',page.url?.()||''))return
   const state=await browserDeadline(page.evaluate(readPlatformLoginState,'wechat'),10000,'视频号登录状态读取超时')
-  if(!this.closed&&this.delegate.page===page){this.delegateQrVisible=Boolean(state.qrVisible);this.emit()}
+  if(!this.closed&&this.delegate.page===page){this.delegateQrVisible=Boolean(state.qrVisible);this.loginPage={panelVisible:Boolean(state.loginPanelVisible),verificationRequired:Boolean(state.verificationRequired),qrGraphics:state.qrGraphics};this.emit()}
  }
  async _isAuthenticated(){
   if(!this.browser?.connected)return false
@@ -263,7 +273,7 @@ export class PlatformChatCollector {
    if(!platformNavigationAllowed(this.connection.platform,page.url()))return
    const state=await page.evaluate(readPlatformLoginState,this.connection.platform),authenticated=await this._isAuthenticated()
    if(generation!==this.generation||!this.wanted)return
-   this.authenticated=authenticated;this.verificationRequired=Boolean(state.verificationRequired);this.pagePath=String(state.path||'').slice(0,180);this.qrVisible=Boolean(state.qrVisible);this.loginRequired=!authenticated&&(this.loginRequested||state.loginVisible)
+   this.authenticated=authenticated;this.verificationRequired=Boolean(state.verificationRequired);this.pagePath=String(state.path||'').slice(0,180);this.qrVisible=Boolean(state.qrVisible);this.loginRequired=!authenticated&&(this.loginRequested||state.loginVisible);this.loginPage={panelVisible:Boolean(state.loginPanelVisible),verificationRequired:Boolean(state.verificationRequired),qrGraphics:state.qrGraphics}
    const frame=await browserDeadline(page.screenshot({type:'jpeg',quality:78,optimizeForSpeed:true}),10000,'平台登录截图超时，请重新连接')
    if(generation!==this.generation||!this.wanted)return
    this.frame=Buffer.from(frame);this.capturedAt=Date.now()

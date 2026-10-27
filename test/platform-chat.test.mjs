@@ -137,7 +137,19 @@ test('QR visibility requires a loaded monochrome image rather than login text or
 test('opening a QR tab never submits the generic login button inside an existing login dialog',()=>{
  const button={innerText:'登录',children:[],getClientRects:()=>[1],getAttribute:()=>null}
  const environment={document:{body:{innerText:'验证码登录 手机号登录'},querySelectorAll:()=>[button]},getComputedStyle:()=>({visibility:'visible'})}
- assert.equal(runInNewContext('('+openPlatformQrLogin.toString()+')()',environment),false)
+ assert.equal(runInNewContext('('+openPlatformQrLogin.toString()+')({panelOpen:true})',environment),false)
+})
+
+test('QR login retries an unresponsive entry after hydration and stops toggling an open panel',async t=>{
+ const f=await fixture(t,{platform:'douyin'});t.mock.timers.enable({apis:['Date','setTimeout'],now:100000})
+ let panelOpen=false;const entryClicks=[],tabClicks=[]
+ const frame={url:()=> 'https://live.douyin.com/',evaluate:async(fn,options)=>fn===readPlatformLoginState?{qrVisible:Date.now()>=107000,loginPanelVisible:panelOpen}:options.panelOpen?{x:20,y:20}:{x:10,y:10}}
+ f.collector.page={isClosed:()=>false,frames:()=>[frame]};f.collector.wanted=true;f.collector.generation=1
+ f.collector._clickFrameLogin=async(_frame,point)=>{if(point.x===10){entryClicks.push(Date.now());if(entryClicks.length===3)panelOpen=true}else tabClicks.push(Date.now())}
+ const pending=f.collector._showQr(1)
+ for(let step=0;step<18;step++){for(let flush=0;flush<12;flush++)await Promise.resolve();t.mock.timers.tick(500)}
+ await pending
+ assert.deepEqual(entryClicks,[100000,102000,104000]);assert.equal(tabClicks.length,1)
 })
 
 test('disconnect during browser startup closes only the late owned browser and never revives collection',async t=>{
