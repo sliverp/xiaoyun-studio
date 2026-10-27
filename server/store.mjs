@@ -1,3 +1,4 @@
+import { validateConnection, normalizeRoomUrl, platformInfo } from './platform-catalog.mjs'
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -24,6 +25,7 @@ export function defaults(root) {
   scene:{title:'云上 AI 直播间',subtitle:'AI 干货分享 · 云端 Agent 实践 · 实时弹幕互动',background:'#eaf5ff',avatarName:'小云',communityQrUrl:'',communityLabel:'欢迎加入交流社群',layout:{mode:'standard',showAvatar:true,showCommunity:true,showCaptions:true}},
   bgm:{asset:'/assets/builtin/bgm/upbeat-loop.mp3',volume:0.12,ducking:0.25},
   output:{width:1280,height:720,fps:15,videoBitrate:2500,audioBitrate:128,rtmpUrl:'',record:true},
+  platforms:[],
   cues:JSON.parse(readFileSync(join(root,'public/demo/cues.json'),'utf8')),
  }
 }
@@ -65,6 +67,8 @@ export function validateConfig(c) {
  assert(integer(c.output.videoBitrate,300,16000)&&integer(c.output.audioBitrate,64,320)&&bool(c.output.record),'编码参数无效')
  assert(text(c.output.rtmpUrl,2048),'推流地址无效')
  if(c.output.rtmpUrl){const u=new URL(c.output.rtmpUrl);assert(['rtmp:','rtmps:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,'请填写 RTMP/RTMPS 服务器地址，密钥另填')}
+ assert(Array.isArray(c.platforms)&&c.platforms.length<=8,'最多添加8个平台连接')
+ const ids=new Set();for(const connection of c.platforms){validateConnection(connection);assert(!ids.has(connection.id),'平台连接 ID 重复');ids.add(connection.id)}
  assert(Array.isArray(c.cues)&&c.cues.length<=100,'固定口播数量过多')
  for(const cue of c.cues)assert(plain(cue)&&/^[a-zA-Z0-9_-]{1,100}$/.test(cue.id)&&text(cue.title,160)&&text(cue.text,4000)&&text(cue.audioUrl||'',2048)&&(cue.text?.trim()||cue.audioUrl)&&(!cue.audioUrl||cue.audioUrl.startsWith('/assets/')),'固定口播需要有效名称、文案或已上传的音频')
  return c
@@ -91,11 +95,27 @@ export class Store {
   for(const [name,key] of Object.entries({llmKey:'STUDIO_LLM_KEY',ttsKey:'STUDIO_TTS_KEY',tencentSecretId:'TENCENT_SECRET_ID',tencentSecretKey:'TENCENT_SECRET_KEY',streamKey:'STUDIO_STREAM_KEY'}))if(env[key])this.vault[name]=env[key]
   if(env.STUDIO_ASR_BASE_URL)this.config.asr.baseUrl=env.STUDIO_ASR_BASE_URL
   if(!this.vault.commentIngestKey)this.vault.commentIngestKey=randomBytes(24).toString('hex')
+  if(!this.config.platforms.length&&this.config.output.rtmpUrl){this.config.platforms=[{id:'legacy-output',platform:'custom',name:'原推流配置',enabled:true,roomUrl:'',rtmpUrl:this.config.output.rtmpUrl}];if(this.vault.streamKey)this.vault['platform.legacy-output.streamKey']=this.vault.streamKey;this.config.output.rtmpUrl='';atomicJson(this.file,this.config)}
   validateConfig(this.config);atomicJson(this.secretFile,this.vault)
  }
  get(){return copy(this.config)}
  secret(name){return this.vault[name]||''}
  presence(){return Object.fromEntries(SECRET_NAMES.map(key=>[key,Boolean(this.vault[key])]))}
+ platformSecret(id){return this.secret('platform.'+id+'.streamKey')}
+ preparePlatform(patch,id){
+  assert(plain(patch),'平台设置必须是对象');const allowed=['platform','name','enabled','roomUrl','rtmpUrl','streamKey'];assert(Object.keys(patch).every(key=>allowed.includes(key)),'未知的平台设置字段')
+  const existing=id?this.config.platforms.find(item=>item.id===id):null;if(id)assert(existing,'平台连接不存在')
+  if(!existing)assert(this.config.platforms.length<8,'最多添加8个平台连接')
+  const selected=platformInfo(existing?.platform||patch.platform);if(existing&&patch.platform!==undefined)assert(patch.platform===existing.platform,'请新建连接以切换平台')
+  const connection={...(existing||{id:randomBytes(12).toString('hex'),platform:selected.id,name:selected.name,enabled:true,roomUrl:'',rtmpUrl:''}),...Object.fromEntries(Object.entries(patch).filter(([key])=>key!=='streamKey'))}
+  connection.name=typeof connection.name==='string'?connection.name.trim():connection.name;connection.roomUrl=normalizeRoomUrl(connection.platform,connection.roomUrl);connection.rtmpUrl=typeof connection.rtmpUrl==='string'?connection.rtmpUrl.trim():connection.rtmpUrl
+  validateConnection(connection);if(patch.streamKey!==undefined&&patch.streamKey!==null)assert(text(patch.streamKey,8192)&&!/[|\r\n\0]/.test(patch.streamKey),'推流密钥格式无效')
+  const next=copy(this.config);next.platforms=existing?next.platforms.map(item=>item.id===id?connection:item):[...next.platforms,connection];validateConfig(next)
+  const vault={...this.vault},key='platform.'+connection.id+'.streamKey';if(patch.streamKey===null)delete vault[key];else if(patch.streamKey)vault[key]=patch.streamKey
+  return {connection,next,vault}
+ }
+ savePlatform(patch,id){const {connection,next,vault}=this.preparePlatform(patch,id);atomicJson(this.secretFile,vault);atomicJson(this.file,next);this.vault=vault;this.config=next;return copy(connection)}
+ removePlatform(id){const next=copy(this.config);assert(next.platforms.some(item=>item.id===id),'平台连接不存在');next.platforms=next.platforms.filter(item=>item.id!==id);const vault={...this.vault};delete vault['platform.'+id+'.streamKey'];atomicJson(this.file,next);atomicJson(this.secretFile,vault);this.config=next;this.vault=vault}
  update(patch){if(patch?.tts&&Object.hasOwn(patch.tts,'demoAsset'))throw new Error('内置演示录音不可通过设置修改');const next=validateConfig(merge(copy(this.config),patch));atomicJson(this.file,next);this.config=next;return this.get()}
  setSecrets(patch){assert(plain(patch),'密钥设置无效');const next={...this.vault};for(const [key,value] of Object.entries(patch)){assert(SECRET_NAMES.includes(key),'未知密钥名称');if(value===null)delete next[key];else if(value!==''){assert(text(value,8192)&&!/[\r\n\0]/.test(value),'密钥格式无效');next[key]=value}}atomicJson(this.secretFile,next);this.vault=next}
  redact(value){let result=String(value||'');for(const secret of Object.values(this.vault))if(typeof secret==='string'&&secret.length>3)result=result.split(secret).join('[redacted]');return result.replace(/(?:sk-|AKID)[A-Za-z0-9_-]{8,}/g,'[redacted]')}

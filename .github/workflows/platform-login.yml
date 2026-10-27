@@ -1,0 +1,32 @@
+name: Inspect headless platform login pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  login-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production headless browser image
+        run: docker build --tag xiaoyun-studio:login .
+      - name: Inspect official login pages without logging in or streaming
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p login-check
+          chmod 777 login-check
+          docker run --rm --shm-size=1g -e STUDIO_LOGIN_SMOKE_DIR=/report -v "$PWD/login-check:/report" xiaoyun-studio:login node scripts/platform-login-smoke.mjs | tee login-check/assessment.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: headless-login-assessment
+          path: |
+            login-check/*.json
+            login-check/*.jpg
+          if-no-files-found: warn
+          retention-days: 3

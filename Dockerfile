@@ -7,6 +7,7 @@ COPY server ./server
 COPY public ./public
 COPY scripts ./scripts
 COPY docs ./docs
+COPY licenses ./licenses
 COPY LICENSE THIRD-PARTY.md ./
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node

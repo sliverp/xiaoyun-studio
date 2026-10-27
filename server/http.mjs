@@ -11,6 +11,7 @@ import { Events } from './events.mjs'
 import { MediaEngine, detectTools } from './media.mjs'
 import { Providers } from './providers.mjs'
 import { LiveDirector } from './director.mjs'
+import { PlatformManager } from './platform-manager.mjs'
 import { ChannelsCollector } from './channels.mjs'
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..')
@@ -20,22 +21,29 @@ async function jsonBody(req){const bytes=await body(req);try{return bytes.length
 function json(res,value,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value))}
 
 /** Own one shared director and media process; controller browsers never own broadcast playback. */
-export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DIR||join(ROOT,'.data'),host=process.env.STUDIO_HOST||'127.0.0.1',port=Number(process.env.PORT||18080),password=process.env.STUDIO_ADMIN_PASSWORD,mediaFactory,providerFactory,directorFactory,channelsFactory,env=process.env}={}){
+export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DIR||join(ROOT,'.data'),host=process.env.STUDIO_HOST||'127.0.0.1',port=Number(process.env.PORT||18080),password=process.env.STUDIO_ADMIN_PASSWORD,mediaFactory,providerFactory,directorFactory,channelsFactory,platformCollectorFactory,env=process.env}={}){
  dataDir=resolve(dataDir);mkdirSync(dataDir,{recursive:true,mode:0o700})
  const store=new Store({root,dataDir,env}),auth=new Auth({dataDir,password,secure:env.STUDIO_SECURE_COOKIE==='1'}),assets=new Assets({root,dataDir}),events=new Events()
- const renderToken=randomBytes(32).toString('hex'),clients=new Set(),monitors=new Set();let media,director,providers,channels,closing=false,previewPromise=null,meter={rms:0,voiceRms:0,bgmRms:0}
+ const renderToken=randomBytes(32).toString('hex'),clients=new Set(),monitors=new Set();let media,director,providers,channels,platforms,closing=false,previewPromise=null,meter={rms:0,voiceRms:0,bgmRms:0}
  const redact=value=>store.redact(value?.message||value)
  const visibleConfig=()=>{const c=store.get();delete c.tts.demoAsset;return c}
  const setup=()=>({tools:detectTools(),providers:providers?.status?.()||{},firstRun:auth.firstRun,headless:true,obsRequired:false,softwareVersion:'0.1.0',commentIngestConfigured:Boolean(store.secret('commentIngestKey'))})
- const snapshot=()=>({config:visibleConfig(),director:director?.status?.()||{},media:media?.status?.()||{},channels:channels?.status?.()||{},secrets:store.presence(),setup:setup()})
+ const snapshot=()=>({config:visibleConfig(),director:director?.status?.()||{},media:media?.status?.()||{},channels:channels?.status?.()||{},platforms:platforms?.status?.()||{catalog:[],connections:[],limit:8},secrets:store.presence(),setup:setup()})
  events.getSnapshot=snapshot
  const trustedRender=req=>{const value=req.headers['x-render-token']||new URL(req.url,'http://studio.local').searchParams.get('renderToken');return typeof value==='string'&&equalToken(value,renderToken)}
  const internalAccess=req=>trustedRender(req)||auth.isAuthenticated(req)
- const ensurePreview=()=>{if(previewPromise&&!media.status().ready)previewPromise=null;if(!previewPromise)previewPromise=media.initialize().then(async()=>{if(!media.status().slide?.pageNumber&&store.get().presentation.url)await media.openPresentation(store.get().presentation.url);applyBgm()}).catch(error=>{events.publish('error',{error:redact(error)});previewPromise=null});return previewPromise}
+ const ensurePreview=()=>{if(previewPromise&&!media.status().ready)previewPromise=null;if(!previewPromise)previewPromise=media.initialize().then(async()=>{if(!media.status().slide?.pageNumber&&store.get().presentation.url)await media.openPresentation(store.get().presentation.url);applyBgm()}).catch(error=>{events.publish('error',{error:redact(error)});previewPromise=null;throw error});return previewPromise}
  const applyBgm=()=>{const c=store.get();try{media.setBgm(c.bgm.asset?assets.resolveUrl(c.bgm.asset):null,{volume:c.bgm.volume,ducking:c.bgm.ducking})}catch(e){events.publish('error',{error:redact(e)})}}
  const programState=()=>{const c=store.get(),m=media.status(),d=director.programState();return {...d,scene:c.scene,slideRevision:m.slide?.revision||0,slide:{title:m.slide?.title||'',pageNumber:m.slide?.pageNumber||0,pageCount:m.slide?.pageCount||0,revision:m.slide?.revision||0},audio:meter,serverAt:Date.now()}}
  const navigate=async direction=>{await ensurePreview();if(director.status().running&&!director.status().paused)throw fail(409,'请先暂停 AI 讲解，再手动切页');if(direction==='next')await media.nextSlide();else if(direction==='prev')await media.previousSlide();else await media.firstSlide();await director.refreshPresentation?.();return snapshot()}
  const actions={
+  'platform.chat.connect':async value=>{await platforms.connect(value.id);return snapshot()},
+  'platform.chat.login':async value=>{await platforms.connect(value.id,{login:true});return snapshot()},
+  'platform.chat.disconnect':async value=>{await platforms.disconnect(value.id);return snapshot()},
+  'platform.chat.click':async value=>{await platforms.click(value.id,{x:value.x,y:value.y});return snapshot()},
+  'output.platform.start':async value=>{await platforms.start(value.id);return snapshot()},
+  'output.platform.stop':async value=>{await platforms.stop(value.id);return snapshot()},
+  'output.platform.retry':async value=>{await platforms.retry(value.id);return snapshot()},
   'channels.connect':async()=>{await channels.connect();return snapshot()},
   'channels.disconnect':async()=>{await channels.disconnect();return snapshot()},
   'channels.click':async value=>{await channels.click({x:value.x,y:value.y});return snapshot()},
@@ -51,8 +59,8 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
   'lottery.queue':()=>{director.queueLottery();return snapshot()},
   'presentation.open':async value=>{if(director.status().running&&!director.status().paused)throw fail(409,'请先暂停 AI 讲解，再更换演示稿');const url=value.url||store.get().presentation.url;validatePresentation(url);await media.openPresentation(url);store.update({presentation:{url}});await director.refreshPresentation?.();return snapshot()},
   'presentation.next':()=>navigate('next'),'presentation.prev':()=>navigate('prev'),'presentation.first':()=>navigate('first'),
-  'output.start':async()=>{await ensurePreview();const c=store.get();await media.startOutput({...c.output,videoBitrate:c.output.videoBitrate+'k',audioBitrate:c.output.audioBitrate+'k',streamKey:store.secret('streamKey')});return snapshot()},
-  'output.stop':async()=>{await media.stopOutput();return snapshot()},
+  'output.start':async()=>{const c=store.get();await media.startOutput({...c.output,videoBitrate:c.output.videoBitrate+'k',audioBitrate:c.output.audioBitrate+'k',destinations:platforms.destinations()},{prepare:ensurePreview});return snapshot()},
+  'output.stop':async()=>{platforms.cancelOutputStarts();await media.stopOutput();return snapshot()},
   'bgm.set':value=>{if(value.asset!==undefined)store.update({bgm:{asset:value.asset}});applyBgm();return snapshot()},
  }
  const relayAudio=buffer=>{for(const socket of monitors){if(socket.readyState!==WebSocket.OPEN)continue;if(socket.bufferedAmount>256*1024){socket.close(1013,'监听延迟过高，请重新连接');continue}socket.send(buffer,{binary:true},()=>{})}}
@@ -90,6 +98,10 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
    checkOrigin(req)
    if(path==='/api/logout'&&req.method==='POST'){res.setHeader('Set-Cookie',auth.logout(req));return json(res,{ok:true})}
    if(path==='/api/state'&&req.method==='GET')return json(res,snapshot())
+   if(path==='/api/platforms'&&req.method==='GET')return json(res,platforms.status())
+   if(path==='/api/platforms'&&req.method==='POST'){platforms.create(await jsonBody(req));return json(res,{ok:true,...snapshot()},201)}
+   const platformPath=/^\/api\/platforms\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})(\/frame\.jpg)?$/.exec(path)
+   if(platformPath){const id=platformPath[1];if(platformPath[2]&&req.method==='GET'){const frame=platforms.frame(id);if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}if(!platformPath[2]&&req.method==='PUT'){await platforms.update(id,await jsonBody(req));return json(res,{ok:true,...snapshot()})}if(!platformPath[2]&&req.method==='DELETE'){await platforms.remove(id);return json(res,{ok:true,...snapshot()})}}
    if(path==='/api/channels/status'&&req.method==='GET')return json(res,channels.status())
    if(path==='/api/channels/frame.jpg'&&req.method==='GET'){const frame=channels.getFrame();if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}
    if(path==='/api/setup'&&req.method==='GET')return json(res,setup())
@@ -101,7 +113,8 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
    }
    if(path==='/api/config'&&req.method==='PUT'){
     const data=await jsonBody(req)
-    if(data.patch?.output&&(['preparing','starting','streaming','running','reconnecting'].includes(media.status().output?.state)||media.status().output?.active))throw fail(409,'请先停止推流或录制，再修改输出设置')
+    if(data.patch?.platforms!==undefined)throw fail(400,'请通过平台连接入口修改平台设置')
+    if(data.patch?.output&&(['preparing','starting','streaming','running','reconnecting'].includes(media.status().output?.state)||media.status().output?.active||media.status().output?.running))throw fail(409,'请先停止推流或录制，再修改输出设置')
     if(data.patch)store.update(data.patch);if(data.secrets)store.setSecrets(data.secrets);director.settingsChanged?.();applyBgm();events.publish('config',visibleConfig());return json(res,snapshot())
    }
    if(path==='/api/action'&&req.method==='POST'){const data=await jsonBody(req),action=Object.hasOwn(actions,data.action)?actions[data.action]:null;if(!action)throw fail(400,'操作不存在');return json(res,{ok:true,...await action(data)})}
@@ -109,7 +122,7 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
    if(path==='/api/upload'&&req.method==='POST'){
     const bytes=await body(req,100*1024*1024),entry=assets.upload(bytes,{filename:String(req.headers['x-filename']||'asset'),type:String(req.headers['x-asset-type']||'')});return json(res,{ok:true,url:entry.url,asset:entry},201)
    }
-   if(path==='/api/frame.jpg'&&req.method==='GET'){void ensurePreview();const frame=media.getFrame();if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}
+   if(path==='/api/frame.jpg'&&req.method==='GET'){void ensurePreview().catch(()=>{});const frame=media.getFrame();if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}
    if(path==='/api/slide.jpg'&&req.method==='GET'){const frame=media.getSlideFrame();if(!frame){res.writeHead(204);return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}
    if(path==='/api/comments'&&req.method==='POST'){const data=await jsonBody(req);director.addComments(Array.isArray(data)?data:data.comments||data.items||data.events||[]);return json(res,{ok:true})}
    if(path==='/api/metrics'&&req.method==='POST'){director.ingestMetrics(await jsonBody(req));return json(res,{ok:true})}
@@ -130,6 +143,7 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
  director=directorFactory?.({store,media,providers,events,dataDir})||new LiveDirector({store,media,providers,events,dataDir})
  const channelsOptions={dataDir,onComments:items=>director.addComments(items),onMetrics:value=>director.ingestMetrics(value),onStatus:value=>events.publish('channels',value)}
  channels=channelsFactory?.(channelsOptions)||new ChannelsCollector(channelsOptions)
- async function close(){if(closing)return;closing=true;for(const client of [...clients]){client.studioCleanup?.();client.end()}for(const socket of monitors)socket.terminate();monitorServer.close();await channels.close();await director.close?.();await media.close();await new Promise(done=>server.close(done))}
- return {server,baseUrl,store,auth,assets,events,media,director,providers,channels,snapshot,ensurePreview,close,dataDir}
+ platforms=new PlatformManager({store,media,director,events,dataDir,collectorFactory:platformCollectorFactory,prepareOutput:ensurePreview})
+ async function close(){if(closing)return;closing=true;for(const client of [...clients]){client.studioCleanup?.();client.end()}for(const socket of monitors)socket.terminate();monitorServer.close();platforms.cancelOutputStarts();await media.stopOutput?.();await platforms.close();await channels.close();await director.close?.();await media.close();await new Promise(done=>server.close(done))}
+ return {server,baseUrl,store,auth,assets,events,media,director,providers,channels,platforms,snapshot,ensurePreview,close,dataDir}
 }

@@ -20,14 +20,11 @@ test('diagnostics do not disclose stream destinations, query tokens or configure
  assert.doesNotMatch(error,/private|hidden|renderSecret|secret-key/)
  assert.match(error,/RTMP destination/)
 })
-test('the encoder maps real video and stereo audio and records both outputs without ignoring stream failures',()=>{
- const args=buildOutputArgs({width:1280,height:720,fps:15,videoBitrate:'2500k',audioBitrate:'128k',destination:'rtmp://example.test/live/key',recordPath:'/tmp/output.mp4'})
+test('one encoder produces encoded MPEG-TS without owning any platform destination',()=>{
+ const args=buildOutputArgs({width:1280,height:720,fps:15,videoBitrate:'2500k',audioBitrate:'128k'})
  assert.ok(args.includes('pipe:0'));assert.ok(args.includes('pipe:3'));assert.ok(args.includes('libx264'));assert.ok(args.includes('aac'))
- assert.match(args.at(-1),/\[f=flv\]rtmp:.*\|\[f=mp4/);assert.doesNotMatch(args.at(-1),/onfail=ignore/)
-})
-test('tee output keeps quotes and backslashes inside destination and recording filenames',()=>{
- const args=buildOutputArgs({width:640,height:360,fps:10,videoBitrate:'800k',audioBitrate:'96k',destination:"rtmp://example.test/live/quote'and\\slash",recordPath:"/tmp/record'with|separator.mp4"})
- assert.equal(args.at(-1),"[f=flv]rtmp://example.test/live/quote\\'and\\\\slash|[f=mp4:movflags=+frag_keyframe+empty_moov]/tmp/record\\'with\\|separator.mp4")
+ assert.equal(args.at(-1),'pipe:1');assert.equal(args.at(-2),'mpegts');assert.equal(args.filter(value=>value==='libx264').length,1)
+ assert.ok(!args.includes('tee'))
 })
 test('speech completes only after its last PCM frame is consumed, and pause does not advance it',async t=>{
  const {mixer,frames}=controlledMixer(t);let reads=0,completed=false
@@ -69,15 +66,18 @@ test('configuration rejects invalid dimensions before launching a browser or con
  assert.equal(typeof detectTools().ready,'boolean')
 })
 
-test('manual stop cancels queued reconnects and cannot revive an old output generation',async t=>{
- t.mock.timers.enable({apis:['setTimeout']})
- const dataDir=mkdtempSync(join(tmpdir(),'studio-media-retry-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})
+test('stopping during output preparation promptly cancels encoding and ignores late preparation completion',{timeout:5000},async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-prepare-cancel-')),engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}})})
  t.after(async()=>{await engine.close();rmSync(dataDir,{recursive:true,force:true})})
- let starts=0;engine.startEncoder=async()=>{starts++};engine.outputWanted=true;engine.outputGeneration=1
- assert.equal(engine.queueReconnect({generation:1,destination:'rtmp://example.test/live',recordPath:null}),true)
- assert.equal(engine.status().output.active,false);assert.equal(engine.status().output.state,'reconnecting')
- await engine.stopOutput();t.mock.timers.tick(10000)
- assert.equal(starts,0);assert.equal(engine.queueReconnect({generation:1,destination:'rtmp://example.test/live'}),false)
+ let entered,release,encoderStarts=0,viewportChanges=0,captures=0,signal
+ const prepared=new Promise(resolve=>{entered=resolve}),pending=new Promise(resolve=>{release=resolve})
+ engine.initialize=async()=>{};engine.programPage={viewport:()=>({width:640,height:360}),async setViewport(){viewportChanges++}};engine.capture=async()=>{captures++};engine.outputGraph.startEncoder=()=>{encoderStarts++}
+ const starting=engine.startOutput({destinations:[{id:'one',platform:'custom',name:'本地测试',rtmpUrl:'rtmp://example.test/live',streamKey:'fixture-only'}],record:false},{prepare:async options=>{signal=options.signal;entered();await pending}})
+ const rejected=assert.rejects(starting,error=>error.name==='AbortError')
+ await prepared;assert.equal(engine.status().output.running,true);assert.equal(engine.status().output.state,'preparing')
+ await engine.stopOutput();await rejected;assert.equal(signal.aborted,true);assert.equal(encoderStarts,0)
+ release();await Promise.resolve();await Promise.resolve();await Promise.resolve()
+ assert.equal(viewportChanges,0);assert.equal(captures,0);assert.equal(engine.status().output.running,false);assert.ok(engine.status().output.platforms.every(item=>!item.active))
 })
 
 test('render authentication is attached to local reads and stripped on external redirects',async t=>{

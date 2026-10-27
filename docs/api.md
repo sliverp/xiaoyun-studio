@@ -44,3 +44,14 @@ window.studioDeck = { goToSlide: number => go(number) }
 现有适配器也识别 Reveal、Remark 和键盘翻页。内置 `public/builtin/slides/deck.js` 是可运行示例。不同 HTML 实现请先手动验证读页、下一页、第一页及最后一页。页面文字作为不可信材料传给模型；不要在演示页中放入密钥。
 
 补充笔记可以用 `# 幻灯片 1` 或 `# 第 1 页` 分节。分节前的文字是全局背景；当前页只携带相关节，避免把整个材料反复发给模型。未分节笔记会截取有界内容；较长材料应按页整理。
+
+
+## 平台连接
+
+GET /api/platforms 返回 catalog、connections 和连接上限。每个连接分别含 stream 与 chat 状态，以及 streamKeySaved；不返回推流密钥或平台 Cookie。POST /api/platforms 新建，PUT /api/platforms/:id 修改，DELETE /api/platforms/:id 停止采集并移除配置与该连接的登录目录；正在输出的连接需先停推。
+
+新建字段：platform（bilibili / douyin / kuaishou / wechat / custom）、name、enabled、roomUrl、rtmpUrl 和可选 streamKey。enabled 表示参与全局同时推流。密钥留空保留，null 清除。直播间 ID 会规范化为相应平台的官方 HTTPS 地址。
+
+动作包括 platform.chat.connect/login/disconnect/click，output.platform.start/stop/retry；都携带 id，登录点击另带截图坐标 x/y。GET /api/platforms/:id/frame.jpg 读取私有登录页面截图，尚无帧返回 204。所有入口都要求管理员认证。连接弹幕和开始推流分别触发。
+
+外部弹幕或指标可携带已配置的 connectionId，服务端按该配置补充来源并命名空间化消息 ID。没有该字段时保留原接入口语义。统一状态的 media.output.running 表示输出引擎/重试仍在运行；active 表示至少一个发送或录像端有实际进度。判断某个平台是否输出请使用 media.output.platforms 中该 id 的 active，而不要把本地录像进度当成平台成功。

@@ -2,7 +2,8 @@
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
 let snapshot = {}, authenticated = false, eventSource = null, configDirty = false, hydrated = false, assets = [], activeTab = 'director', polling = null, previewTimer = null, setupTimer = null, toastTimer = null;
-let channelsTimer = null, channelsFocus = null, channelsFrameRevision = 0;
+let channelsTimer = null, channelsFocus = null, channelsFrameRevision = 0, activePlatformId = null;
+let editingPlatformId = null, selectedPlatformKind = null, platformReturnFocus = null;
 let audioMonitor = null, monitorEnabled = false, monitorReconnect = null;
 let microphone = null, microphoneEnabled = false, microphoneBusy = false, recordingParts = [], preRoll = [], phraseStarted = 0, lastVoicedAt = 0, voicedDuration = 0, phraseActive = false, asrAbort = null;
 const stageLabels = {idle:'准备就绪',ended:'已结束',cue:'固定口播',question:'人机对话',stopped:'已停止',opening:'开场欢迎',source:'内容讲解',lecture:'内容讲解',comment:'弹幕回应',engagement:'互动引导','flash-sale':'秒杀提醒',sale:'秒杀提醒',lottery:'口令抽奖','lottery-announcement':'抽奖说明','lottery-wait':'等待参与','lottery-result':'开奖播报',closing:'收尾告别',waiting:'等待就绪',advancing:'翻页',error:'需要处理',paused:'已暂停',scheduling:'调度下一轮'};
@@ -27,7 +28,7 @@ function useTab(name) {
   activeTab = name;
   $$('[data-tab]').forEach(button => { button.classList.toggle('active',button.dataset.tab === name); button.setAttribute('aria-selected',String(button.dataset.tab === name)); });
   $$('[data-panel]').forEach(panel => panel.hidden = panel.dataset.panel !== name);
-  if (name === 'broadcast') refreshSetup().catch(showError);
+  if (name === 'broadcast') {refreshSetup().catch(showError);refreshPlatforms().catch(showError);}
   if (name === 'materials') refreshAssets().catch(showError);
   if (name === 'director') updatePreviews();
 }
@@ -94,22 +95,62 @@ function readStage(director={}) { const stage = director.stage?.id || director.s
 function timeLabel(seconds) { const total = Math.max(0,Math.floor(Number(seconds)||0));return [Math.floor(total/3600),Math.floor(total/60)%60,total%60].map(n=>String(n).padStart(2,'0')).join(':'); }
 function level(value) { const v=Math.max(0,Math.min(1,Number(value)||0));return {width:Math.min(100,Math.sqrt(v)*120),label:v>.0001?`${Math.max(-80,20*Math.log10(v)).toFixed(1)} dB`:'−∞ dB'}; }
 function updateMeter(audio={}) { for(const [name,value] of [['voice',audio.voiceRms],['bgm',audio.bgmRms],['output',audio.rms]]){const result=level(value);$(name+'-meter').style.width=result.width+'%';$(name+'-level').textContent=result.label;} }
+const platformMarks={bilibili:{mark:'哔',color:'#f899ba',tint:'#ed72a91b',line:'#e581ac4d'},douyin:{mark:'抖',color:'#9de3ed',tint:'#62cfdb18',line:'#76cfdb42'},kuaishou:{mark:'快',color:'#ffba85',tint:'#f49b5e1c',line:'#ec9b6350'},wechat:{mark:'微',color:'#8ddcae',tint:'#63c48c1b',line:'#6ec38c45'}};
+function platformData(){const value=snapshot.platforms||{};return {catalog:Array.isArray(value.catalog)?value.catalog:[],connections:Array.isArray(value.connections)?value.connections:[],limit:Number(value.limit)||8};}
+function findPlatform(id){return platformData().connections.find(item=>item.id===id);}
+function platformStream(connection){return snapshot.media?.output?.platforms?.find(item=>item.id===connection.id)||connection.stream||{};}
+function streamDisplayFields(stream){return {state:stream.state,active:stream.active,error:stream.error,reconnects:stream.reconnects};}
+function platformCatalog(kind){return platformData().catalog.find(item=>item.id===kind)||{id:kind,name:kind,description:'',roomPlaceholder:'直播间链接或房间号',loginDescription:'按平台要求完成登录。'};}
+function platformMark(kind){const style=platformMarks[kind]||{mark:'播',color:'#b0a5ff',tint:'#6d67ed25',line:'#7e77ff55'};return `<span class="platform-mark" style="--platform-color:${style.color};--platform-tint:${style.tint};--platform-line:${style.line}">${style.mark}</span>`;}
+function streamPresentation(stream){const state=stream.state||'stopped';if(stream.active===true)return {label:'正在推流',tone:'good',on:true};if(['preparing','starting','reconnecting','running','stopping'].includes(state))return {label:state==='stopping'?'正在停止推流':state==='reconnecting'?'正在重连':'正在连接推流',tone:'wait',on:true};if(state==='error')return {label:'推流失败',tone:'bad',on:false};return {label:state==='disabled'?'未启用推流':state==='not-configured'?'待填写推流信息':'未推流',tone:'',on:false};}
+function chatPresentation(chat){const state=chat.state||'disconnected';const tone=state==='receiving'?'good':chat.error||state==='error'?'bad':['connecting','reconnecting','login-required'].includes(state)||chat.loginRequired?'wait':'';return {label:chat.label||(state==='receiving'?'正在接收弹幕':chat.loginRequired?'等待扫码登录':chat.browserOpen?'浏览器已连接 · 等待消息':'弹幕未连接'),tone};}
+async function refreshPlatforms(){if(!authenticated)return;const value=await api('/api/platforms');snapshot.platforms=value.platforms||value;renderPlatformConnections();updateOutput(snapshot.media||{});}
+function renderPlatformConnections(){
+ const {catalog,connections,limit}=platformData();$('platform-count').textContent=`${connections.length} / ${limit} 个平台连接`;$('add-platform').disabled=connections.length>=limit;
+ const signature=JSON.stringify([catalog,connections.map(item=>({...item,stream:streamDisplayFields(platformStream(item)),chat:{state:item.chat?.state,label:item.chat?.label,error:item.chat?.error,browserOpen:item.chat?.browserOpen,loginRequired:item.chat?.loginRequired,commentCount:item.chat?.commentCount,messageResponses:item.chat?.messageResponses,lastMessageAt:item.chat?.lastMessageAt}}))]);
+ if($('platform-list').dataset.signature===signature)return;$('platform-list').dataset.signature=signature;
+ if(!connections.length){$('platform-list').innerHTML='<div class="panel platform-empty"><span>＋</span><h3>添加你的第一个直播平台</h3><p>选择平台，填写推流地址与房间链接；再按需要连接弹幕。</p><button class="primary" data-platform-ui="add">添加平台</button></div>';return;}
+ $('platform-list').innerHTML=connections.map(item=>{const platform=platformCatalog(item.platform),stream=platformStream(item),chat=item.chat||{},output=streamPresentation(stream),feedback=chatPresentation(chat),configured=Boolean(item.rtmpUrl),chatSupported=platform.chatSupported!==false;
+ const chatDetail=chat.reason||(Number(chat.commentCount)>0?`累计收到 ${Number(chat.commentCount)} 条弹幕`:chat.loginRequired?'请完成平台登录，随后检查实时消息':chat.browserOpen?'尚未收到真实直播消息':'连接后核对当前直播间的实时消息');
+ const outputDetail=stream.active?'平台是否公开开播，以平台后台为准':configured?(item.streamKeySaved?'推流地址与密钥已保存':'推流地址已保存'):'尚未填写推流服务器地址';
+ return `<article class="panel platform-card" data-connection="${escapeHtml(item.id)}"><div class="platform-card-header">${platformMark(item.platform)}<div class="platform-card-title"><h3>${escapeHtml(item.name||platform.name)}</h3><p>${escapeHtml(platform.name)}</p></div><label class="platform-enable"><input type="checkbox" data-platform-enable="${escapeHtml(item.id)}" ${item.enabled?'checked':''} ${output.on?'disabled':''}>参与同时推流</label></div><span class="platform-room" title="${escapeHtml(item.roomUrl||'')}">${escapeHtml(item.roomUrl||(item.platform==='wechat'?'视频号助手直播后台':item.platform==='custom'?'通过 RTMP / RTMPS 输出':'尚未填写直播间链接或房间号'))}</span><div class="platform-status-grid"><div class="platform-status-cell"><small>画面与声音</small><strong><i class="connection-dot ${output.tone}"></i><span class="connection-status-value">${escapeHtml(output.label)}</span></strong><p>${escapeHtml(outputDetail)}</p></div><div class="platform-status-cell"><small>弹幕与观众反馈</small><strong><i class="connection-dot ${feedback.tone}"></i><span class="connection-status-value">${escapeHtml(feedback.label)}</span></strong><p>${escapeHtml(chatSupported?chatDetail:platform.description||'此平台弹幕接入尚未就绪')}</p></div></div>${stream.error?`<p class="error platform-card-error">推流：${escapeHtml(stream.error)}</p>`:''}${chat.error?`<p class="error platform-card-error">弹幕：${escapeHtml(chat.error)}</p>`:''}<div class="platform-card-actions"><button class="${output.on?'danger ghost':'primary'}" data-platform-action="${output.on?'output.platform.stop':stream.state==='error'?'output.platform.retry':'output.platform.start'}" data-platform-id="${escapeHtml(item.id)}" ${stream.state==='stopping'?'disabled':''}>${output.on?'停止推流':stream.state==='error'?'重试推流':'开始推流'}</button><button data-platform-ui="chat" data-platform-id="${escapeHtml(item.id)}" ${chatSupported?'':'disabled'}>${chat.loginRequired?'完成弹幕登录':chat.browserOpen?'查看弹幕连接':'连接弹幕'}</button><button class="ghost platform-edit-action" data-platform-ui="edit" data-platform-id="${escapeHtml(item.id)}">设置</button><button class="icon-button" data-platform-ui="remove" data-platform-id="${escapeHtml(item.id)}" aria-label="移除 ${escapeHtml(item.name||platform.name)}" ${output.on?'disabled':''}>移除</button></div><p class="platform-card-footnote">${output.on?'停止此平台推流后，可以修改参与同时推流的设置。':!chatSupported?'此连接仅推流；弹幕可通过高级接入口接入。':chat.state==='receiving'?'已收到此直播间的真实弹幕。':'推流和弹幕独立连接；登录与实时消息需在实际开播环境核对。'}</p></article>`;
+ }).join('');
+}
+function rememberPlatformFocus(){if(!platformReturnFocus)platformReturnFocus=document.activeElement;}
+function restorePlatformFocus(){const target=platformReturnFocus?.isConnected?platformReturnFocus:$('add-platform');platformReturnFocus=null;target?.focus();}
+function openPlatformPicker(){rememberPlatformFocus();const {catalog,connections,limit}=platformData();$('platform-catalog').innerHTML=catalog.length?catalog.map(item=>`<button class="platform-catalog-card" data-platform-kind="${escapeHtml(item.id)}" ${connections.length>=limit?'disabled':''}>${platformMark(item.id)}<span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.chatSupported===false?'仅推流 · '+(item.description||'其他平台'):item.description||'配置推流与弹幕连接')}</small></span></button>`).join(''):'<p class="platform-catalog-empty">平台列表尚未加载，请稍后重试。</p>';$('platform-picker').hidden=false;$('close-platform-picker').focus();}
+function closePlatformPicker(){ $('platform-picker').hidden=true;restorePlatformFocus(); }
+function openPlatformEditor(kind,id=null){
+ const connection=id?findPlatform(id):null;if(id&&!connection){notify('这个连接已被移除，请刷新后重试',true);return;}rememberPlatformFocus();$('platform-picker').hidden=true;editingPlatformId=id;selectedPlatformKind=kind;const catalog=platformCatalog(kind);$('platform-form').reset();$('platform-editor-kind').textContent=catalog.name;$('platform-editor-title').textContent=id?'编辑直播连接':'添加直播连接';$('platform-name').value=connection?.name||catalog.name+'直播间';$('platform-enabled').checked=connection?.enabled??true;$('platform-rtmp').value=connection?.rtmpUrl||'';$('platform-room').value=connection?.roomUrl||'';$('platform-room').disabled=catalog.chatSupported===false;$('platform-room').placeholder=catalog.roomPlaceholder||'平台官方直播间链接或房间号';$('platform-key').value='';$('platform-key').placeholder=connection?.streamKeySaved?'已保存 · 留空保持不变':'平台提供的串流密钥';$('platform-clear-key-row').hidden=!connection?.streamKeySaved;$('platform-clear-key').checked=false;$('platform-room-help').textContent=catalog.loginDescription||'按平台要求登录并连接当前直播间。';$('platform-editor-error').hidden=true;$('platform-editor').hidden=false;$('platform-name').focus();
+}
+function closePlatformEditor(){ $('platform-editor').hidden=true;$('platform-key').value='';editingPlatformId=null;selectedPlatformKind=null;restorePlatformFocus(); }
+async function savePlatform(event){
+ event.preventDefault();const button=$('save-platform');button.disabled=true;$('platform-editor-error').hidden=true;
+ try{const rtmpUrl=$('platform-rtmp').value.trim();if(rtmpUrl&&!/^rtmps?:\/\//i.test(rtmpUrl))throw new Error('请填写 RTMP 或 RTMPS 推流地址，例如 rtmp://…/live。');const basic={name:$('platform-name').value.trim(),enabled:$('platform-enabled').checked,roomUrl:$('platform-room').value.trim(),rtmpUrl},existing=editingPlatformId?findPlatform(editingPlatformId):null;const body=existing?(changedConfig({name:existing.name,enabled:existing.enabled,roomUrl:existing.roomUrl,rtmpUrl:existing.rtmpUrl},basic)||{}):{...basic,platform:selectedPlatformKind};if($('platform-clear-key').checked)body.streamKey=null;else if($('platform-key').value.trim())body.streamKey=$('platform-key').value.trim();const result=await api('/api/platforms'+(editingPlatformId?'/'+encodeURIComponent(editingPlatformId):''),{method:editingPlatformId?'PUT':'POST',body});const value=stateValue(result);if(value?.config)applyState(value);else await refreshPlatforms();closePlatformEditor();notify('平台连接已保存；推流和弹幕可分别启动');}
+ catch(error){$('platform-editor-error').textContent=error.message;$('platform-editor-error').hidden=false;}
+ finally{button.disabled=false;}
+}
+function trapModalKeys(event,close){if(event.key==='Escape'){event.preventDefault();close();return;}if(event.key!=='Tab')return;const focusable=[...event.currentTarget.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled)')].filter(node=>node.getClientRects().length),first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}}
+
 function updateOutput(media={}) {
- const output=media.output||{}, state=output.state||'stopped',active=output.active===true, pending=['preparing','starting','reconnecting'].includes(state),on=active||pending,recordOnly=output.mode==='record';
- $('output-pill').className='status-pill'+(active?' live':'');$('output-pill').innerHTML=`<i></i>${active?(recordOnly?'正在录制':'正在推流'):pending?'正在连接输出':'未推流'}`;
- $('output-mode').textContent=active?(recordOnly?'本地录制':output.mode==='both'?'RTMP + 录制':'RTMP 输出'):pending?'编码器连接中':'未连接平台';
+ const output=media.output||{},state=output.state||'stopped',connections=platformData().connections,streams=Array.isArray(output.platforms)?output.platforms:connections.map(platformStream),activeCount=streams.filter(item=>item.active===true).length,requestedCount=Math.max(activeCount,streams.filter(item=>!['stopped','idle','disabled'].includes(item.state)).length),pending=['preparing','starting','reconnecting'].includes(state),on=output.running===true||output.encodingActive===true||pending,recording=output.recordingStatus?.active===true,failed=streams.some(item=>['error','reconnecting'].includes(item.state)),active=activeCount>0;
+ let pill=active?`${activeCount} / ${requestedCount} 路正在推流${failed?' · 部分异常':''}`:recording?(failed?'仅录制 · 推流异常':'正在录制'):failed||state==='error'?'推流异常':state==='stopping'?'正在停止输出':pending?'正在准备输出':output.encodingActive?'编码器运行 · 未推流':'未推流';
+ $('output-pill').className='status-pill'+(active||recording?' live':'');$('output-pill').innerHTML='<i></i>'+escapeHtml(pill);
+ $('output-mode').textContent=active?`${activeCount} / ${requestedCount} 平台${recording?' · 录制中':''}`:recording?'仅本地录制':failed||state==='error'?'输出需要处理':on?'正在准备输出':'未推流';
  $('output-start').hidden=on;$('output-stop').hidden=!on;
  $('output-duration').textContent=timeLabel(output.seconds ?? (output.startedAt?(Date.now()-output.startedAt)/1000:0));
  $('fps-value').textContent=Number.isFinite(media.currentFps)?Number(media.currentFps).toFixed(1):'—';
  $('dropped-value').textContent=String(media.droppedFrames||0);
  $('program-resolution').textContent=media.width&&media.height?`${media.width} × ${media.height} · ${media.fps||'—'} FPS`:media.initialized?'渲染器已就绪':'后台正在准备';
  $('output-error').textContent=output.error||media.error||'';$('output-error').hidden=!$('output-error').textContent;
+ $('output-platform-summary').innerHTML=connections.length?connections.map(item=>{const stream=streamPresentation(platformStream(item));return `<div class="output-platform-row"><i class="connection-dot ${stream.tone}"></i><span>${escapeHtml(item.name)}</span><b>${escapeHtml(stream.label)}</b></div>`;}).join(''):'';
  updateMeter(media.audio);
 }
+
 function renderComments(director={}) {
  let comments=director.recentComments||director.comments?.recent||director.comments||director.commentQueue?.recent||[];if(!Array.isArray(comments))comments=[];
  const count=director.commentCount ?? director.comments?.buffered ?? director.commentQueue?.buffered ?? comments.length;$('comment-count').textContent=`${count} 条`;
- $('comment-list').innerHTML=comments.length?comments.slice(-15).map(item=>`<div class="comment"><strong>${escapeHtml(item.nickname||item.user||'观众')}</strong>${escapeHtml(item.content||item.text||'')}</div>`).join(''):'<p class="empty-copy">尚未收到弹幕，连接采集端后会显示在这里。</p>';
+ $('comment-list').innerHTML=comments.length?comments.slice(-15).map(item=>`<div class="comment">${item.connectionName||item.platformName?`<small class="comment-source">${escapeHtml(item.connectionName||item.platformName)}</small>`:''}<strong>${escapeHtml(item.nickname||item.user||'观众')}</strong>${escapeHtml(item.content||item.text||'')}</div>`).join(''):'<p class="empty-copy">尚未收到弹幕，连接采集端后会显示在这里。</p>';
 }
 function renderCues(config={}) {
  const cues=Array.isArray(config.cues)?config.cues:[];
@@ -137,7 +178,7 @@ function applyState(value) {
  $('lottery-status').textContent=lottery.winner?`${lottery.winner.nickname||lottery.winner.id||lottery.winner} · ${lottery.prize||'中奖'}`:lottery.state?({queued:'抽奖已排队',announcing:'正在说明参与方式',waiting:'正在收集参与弹幕',result:'正在播报结果',completed:'本轮抽奖已完成'}[lottery.state]||'抽奖记录已保存'):'完整口播结束后进入抽奖环节';
  $('demo-badge').hidden=value.config.tts?.provider!=='demo';
  $$('[data-layout]').forEach(button=>button.classList.toggle('selected',button.dataset.layout===(value.config.scene?.layout?.mode||'standard')));
- renderComments(director);renderHistory(director.history||[]);renderCues(value.config);updateOutput(media);hydrate(value.config,value.secrets||{});
+ renderComments(director);renderHistory(director.history||[]);renderCues(value.config);renderPlatformConnections();updateOutput(media);hydrate(value.config,value.secrets||{});
  const speech=director.currentSpeech||director.speech;
  const text=typeof speech==='string'?speech:speech?.text;
  if(text&&text!==speechSignature){speechSignature=text;appendMessage('assistant',text);}
@@ -151,9 +192,9 @@ async function runAction(action,extra={},button=null){
  if(button?.disabled)return;
  const wasDisabled=button?.disabled;if(button)button.disabled=true;
  try{
-  if(['output.start','live.start'].includes(action)&&configDirty)await saveSettings({quiet:true});
+  if(['output.start','output.platform.start','output.platform.retry','live.start'].includes(action)&&configDirty)await saveSettings({quiet:true});
   const result=await api('/api/action',{method:'POST',body:{action,...extra}});const value=stateValue(result);if(value?.config)applyState(value);else await refreshState();
-  const labels={'live.start':'开始 AI 播报','live.pause':'AI 已暂停','live.resume':'AI 继续播报','live.restart':'已安排从头播报','live.finish':'已安排整段播完后告别','live.stop':'AI 已停止','sale.queue':'秒杀提醒已排队','sale.hide':'已收起秒杀码','lottery.queue':'抽奖已排队','presentation.next':'已翻到下一页','presentation.prev':'已翻到上一页','presentation.first':'已回到第一页','output.start':'后台正在启动编码与输出','output.stop':'输出已停止','bgm.set':'背景音乐已更新','cue.play':'固定口播已安排'};
+  const labels={'live.start':'开始 AI 播报','live.pause':'AI 已暂停','live.resume':'AI 继续播报','live.restart':'已安排从头播报','live.finish':'已安排整段播完后告别','live.stop':'AI 已停止','sale.queue':'秒杀提醒已排队','sale.hide':'已收起秒杀码','lottery.queue':'抽奖已排队','presentation.next':'已翻到下一页','presentation.prev':'已翻到上一页','presentation.first':'已回到第一页','output.start':'后台正在启动编码与输出','output.stop':'全部输出已停止','output.platform.start':'正在启动该平台推流','output.platform.stop':'已停止该平台推流','output.platform.retry':'正在重试该平台推流','platform.chat.connect':'正在连接该平台弹幕','platform.chat.login':'正在打开平台登录页','platform.chat.disconnect':'已断开该平台弹幕','bgm.set':'背景音乐已更新','cue.play':'固定口播已安排'};
   if(labels[action]){notify(labels[action]);logActivity(labels[action]);}return result;
  }catch(error){showError(error);throw error;}finally{if(button)button.disabled=wasDisabled||false;}
 }
@@ -166,12 +207,13 @@ function installEvents(){
   else if(type==='state'||type==='snapshot')applyState(stateValue(payload));
   else if(type==='director'){snapshot.director=payload;applyState(snapshot);}
   else if(type==='media'){snapshot.media=payload;applyState(snapshot);}
+  else if(type==='platforms'){snapshot.platforms=payload;renderPlatformConnections();updateOutput(snapshot.media||{});}
   else if(type==='meter'){if(snapshot.media)snapshot.media.audio=payload;updateMeter(payload);}
   else if(type==='speech'){const text=payload.text||payload.speech;if(text&&text!==speechSignature){speechSignature=text;appendMessage('assistant',text);}}
   else if(type==='error'){showError(payload.error||payload.message||'后台发生错误');}
   else if(type==='log'||type==='activity')logActivity(payload.message||payload.text||String(payload));
  }catch{ /* Ignore incomplete reconnect events; polling reconciles the shared state. */ }};
- eventSource.onmessage=accept;for(const name of ['state','snapshot','director','media','meter','speech','error','log','activity'])eventSource.addEventListener(name,accept);
+ eventSource.onmessage=accept;for(const name of ['state','snapshot','director','media','platforms','meter','speech','error','log','activity'])eventSource.addEventListener(name,accept);
 }
 function loadPreview(id,empty,url){const preloader=new Image();preloader.onload=()=>{$(id).src=preloader.src;$(id).hidden=false;$(empty).hidden=true;};preloader.onerror=()=>{if(!$(id).getAttribute('src')){$(id).hidden=true;$(empty).hidden=false;}};preloader.src=url+'?t='+Date.now();}
 function updatePreviews(){if(authenticated&&activeTab==='director'&&!document.hidden){loadPreview('program-preview','program-empty','/api/frame.jpg');loadPreview('slide-preview','slide-empty','/api/slide.jpg');}}
@@ -221,21 +263,20 @@ async function refreshSetup(){
  if(!items.length){const media=snapshot.media||{};add('后台渲染',media.initialized,media.error||'请等待后端初始化');add('模型密钥',snapshot.secrets?.llmKey,'在 AI 与语音中配置供应商');add('语音合成',snapshot.config?.tts?.provider==='demo'||snapshot.secrets?.ttsKey||snapshot.secrets?.tencentSecretKey,snapshot.config?.tts?.provider==='demo'?'当前仅演示预录音':snapshot.config?.tts?.provider||'尚未配置');}
  $('setup-results').innerHTML=items.map(item=>`<div class="diagnostic-row ${item.ok?'':'warning'}"><i>${item.ok?'✓':'!'}</i><div>${escapeHtml(item.name)}<small>${escapeHtml(item.detail|| (item.ok?'已就绪':'等待配置或初始化'))}</small></div><span class="badge">${item.ok?'就绪':'待处理'}</span></div>`).join('');
 }
-function showLogin(){authenticated=false;eventSource?.close();eventSource=null;clearInterval(polling);clearInterval(previewTimer);clearInterval(setupTimer);clearInterval(channelsTimer);channelsFrameRevision++;$('channels-dialog').hidden=true;channelsFocus=null;void stopMicrophone();void stopMonitor();$('studio').hidden=true;$('login-screen').hidden=false;}
-async function enterStudio(){authenticated=true;$('login-screen').hidden=true;$('studio').hidden=false;await Promise.all([refreshState(),refreshAssets()]);installEvents();clearInterval(polling);polling=setInterval(()=>refreshState().catch(error=>{if(authenticated)logActivity(error.message,true);}),3000);clearInterval(previewTimer);previewTimer=setInterval(updatePreviews,800);clearInterval(setupTimer);setupTimer=setInterval(()=>{if(activeTab==='broadcast')refreshSetup().catch(()=>{});},12000);updatePreviews();$('comments-endpoint').textContent=location.origin+'/api/comments';$('metrics-endpoint').textContent=location.origin+'/api/metrics';}
+function showLogin(){authenticated=false;eventSource?.close();eventSource=null;clearInterval(polling);clearInterval(previewTimer);clearInterval(setupTimer);clearInterval(channelsTimer);channelsFrameRevision++;$('channels-dialog').hidden=true;$('platform-picker').hidden=true;$('platform-editor').hidden=true;$('platform-key').value='';channelsFocus=null;activePlatformId=null;platformReturnFocus=null;void stopMicrophone();void stopMonitor();$('studio').hidden=true;$('login-screen').hidden=false;}
+async function enterStudio(){authenticated=true;$('login-screen').hidden=true;$('studio').hidden=false;await Promise.all([refreshState(),refreshAssets(),refreshPlatforms()]);installEvents();clearInterval(polling);polling=setInterval(()=>refreshState().catch(error=>{if(authenticated)logActivity(error.message,true);}),3000);clearInterval(previewTimer);previewTimer=setInterval(updatePreviews,800);clearInterval(setupTimer);setupTimer=setInterval(()=>{if(activeTab==='broadcast')refreshSetup().catch(()=>{});},12000);updatePreviews();$('comments-endpoint').textContent=location.origin+'/api/comments';$('metrics-endpoint').textContent=location.origin+'/api/metrics';}
 
 async function refreshChannels() {
- if($('channels-dialog').hidden)return;
+ if($('channels-dialog').hidden||!activePlatformId)return;
  try{
-  const value=await api('/api/channels/status'),status=value.status||value;
-  const browserReady=status.browserOpen===true||status.connected===true;const label=status.error?'监听需要处理':status.label||(status.loginRequired?'等待微信扫码登录':browserReady?(status.commentCount>0?'已收到 '+status.commentCount+' 条弹幕':'浏览器已连接 · 尚未收到弹幕'):'浏览器未连接');
-  $('channels-status').textContent=label;$('channels-error').textContent=status.error||'';$('channels-error').hidden=!status.error;
-  $('connect-channels').disabled=['connecting','reconnecting'].includes(status.state);
-  const revision=++channelsFrameRevision;if(!browserReady){$('channels-image').removeAttribute('src');$('channels-image').hidden=true;$('channels-empty').hidden=false;return;}const image=new Image();image.onload=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').src=image.src;$('channels-image').hidden=false;$('channels-empty').hidden=true;};image.onerror=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').hidden=true;$('channels-empty').hidden=false;};image.src='/api/channels/frame.jpg?t='+Date.now();
+  const value=await api('/api/platforms'),platforms=value.platforms||value; snapshot.platforms=platforms;renderPlatformConnections();const connection=platformData().connections.find(item=>item.id===activePlatformId);if(!connection){closeChannels();notify('这个平台连接已被移除',true);return;}const status=connection.chat||{},catalog=platformCatalog(connection.platform),browserReady=status.browserOpen===true||status.connected===true;
+  $('channels-title').textContent=(connection.name||catalog.name)+' · 弹幕连接';$('channels-description').textContent=catalog.loginDescription||'浏览器在服务器上运行；请按平台要求完成登录。';$('channels-status').textContent=chatPresentation(status).label;$('channels-detail').textContent=status.reason||(status.commentCount>0?'累计收到 '+status.commentCount+' 条真实弹幕':'推流与弹幕独立连接；目前仅显示实际采集状态。');$('channels-error').textContent=status.error||'';$('channels-error').hidden=!status.error;$('connect-channels').disabled=['connecting','reconnecting'].includes(status.state);$('login-channels').disabled=['connecting','reconnecting'].includes(status.state);$('disconnect-channels').disabled=!browserReady&&!['connecting','reconnecting'].includes(status.state);
+  const revision=++channelsFrameRevision;if(!browserReady){$('channels-image').removeAttribute('src');$('channels-image').hidden=true;$('channels-empty').hidden=false;return;}const image=new Image();image.onload=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').src=image.src;$('channels-image').hidden=false;$('channels-empty').hidden=true;};image.onerror=()=>{if(revision!==channelsFrameRevision)return;$('channels-image').hidden=true;$('channels-empty').hidden=false;};image.src='/api/platforms/'+encodeURIComponent(activePlatformId)+'/frame.jpg?t='+Date.now();
  }catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}
 }
-function openChannels(){ channelsFocus=document.activeElement;$('channels-dialog').hidden=false;$('close-channels').focus();void refreshChannels();clearInterval(channelsTimer);channelsTimer=setInterval(refreshChannels,2000); }
-function closeChannels(){ $('channels-dialog').hidden=true;clearInterval(channelsTimer);channelsTimer=null;channelsFrameRevision++;channelsFocus?.focus();channelsFocus=null; }
+async function platformChatAction(action){if(!activePlatformId)return;try{const result=await api('/api/action',{method:'POST',body:{action,id:activePlatformId}});const value=stateValue(result);if(value?.config)applyState(value);await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}}
+function openChannels(id){const connection=findPlatform(id);if(!connection)return;channelsFocus=document.activeElement;activePlatformId=id;$('channels-image').removeAttribute('src');$('channels-image').hidden=true;$('channels-empty').hidden=false;$('channels-error').hidden=true;$('channels-title').textContent=(connection.name||platformCatalog(connection.platform).name)+' · 弹幕连接';$('channels-dialog').hidden=false;$('close-channels').focus();void refreshChannels();clearInterval(channelsTimer);channelsTimer=setInterval(refreshChannels,2000);if(!connection.chat?.browserOpen)void platformChatAction('platform.chat.connect');}
+function closeChannels(){ $('channels-dialog').hidden=true;clearInterval(channelsTimer);channelsTimer=null;channelsFrameRevision++;activePlatformId=null;if(channelsFocus?.isConnected)channelsFocus.focus();else $('add-platform').focus();channelsFocus=null; }
 /** Optional operator headphones tap; the encoded audio remains owned by the server. */
 function clearMonitorNodes() {
  if(!audioMonitor)return;
@@ -323,14 +364,23 @@ $('apply-bgm').addEventListener('click',async()=>{try{const asset=$('quick-bgm')
 $('quick-bgm-volume').addEventListener('input',updateRangeLabels);
 $('demo-comment').addEventListener('click',async()=>{try{await api('/api/comments',{method:'POST',body:{comments:[{id:'console-test-'+Date.now(),nickname:'场控测试',content:'这个方案可以做什么？',at:Date.now()}]}});await refreshState();notify('测试弹幕已送入真实队列');}catch(error){showError(error);}});
 $('add-cue').addEventListener('click',()=>addCueEditor());
-$('open-channels').addEventListener('click',openChannels);
+$('open-channels').addEventListener('click',()=>useTab('broadcast'));
+$('add-platform').addEventListener('click',openPlatformPicker);
+$('platform-list').addEventListener('click',async event=>{const button=event.target.closest('button');if(!button)return;const id=button.dataset.platformId,ui=button.dataset.platformUi;if(ui==='add')openPlatformPicker();else if(ui==='edit'){const connection=findPlatform(id);if(connection)openPlatformEditor(connection.platform,id);}else if(ui==='chat')openChannels(id);else if(ui==='remove'){button.disabled=true;try{const result=await api('/api/platforms/'+encodeURIComponent(id),{method:'DELETE'});const value=stateValue(result);if(value?.config)applyState(value);else await refreshPlatforms();notify('已移除平台连接');}catch(error){showError(error);button.disabled=false;}}else if(button.dataset.platformAction)void runAction(button.dataset.platformAction,{id},button).catch(()=>{});});
+$('platform-list').addEventListener('change',async event=>{const input=event.target.closest('[data-platform-enable]');if(!input)return;input.disabled=true;try{const result=await api('/api/platforms/'+encodeURIComponent(input.dataset.platformEnable),{method:'PUT',body:{enabled:input.checked}});const value=stateValue(result);if(value?.config)applyState(value);else await refreshPlatforms();}catch(error){input.checked=!input.checked;showError(error);}finally{input.disabled=false;}});
+$('platform-catalog').addEventListener('click',event=>{const button=event.target.closest('[data-platform-kind]');if(button)openPlatformEditor(button.dataset.platformKind);});
+$('close-platform-picker').addEventListener('click',closePlatformPicker);
+$('close-platform-editor').addEventListener('click',closePlatformEditor);
+$('cancel-platform-editor').addEventListener('click',closePlatformEditor);
+$('platform-form').addEventListener('submit',savePlatform);
+$('platform-key').addEventListener('input',()=>{if($('platform-key').value)$('platform-clear-key').checked=false;});
+for(const [id,close]of [['platform-picker',closePlatformPicker],['platform-editor',closePlatformEditor],['channels-dialog',closeChannels]]){$(id).addEventListener('click',event=>{if(event.target===$(id))close();});$(id).addEventListener('keydown',event=>trapModalKeys(event,close));}
 $('close-channels').addEventListener('click',closeChannels);
-$('channels-dialog').addEventListener('click',event=>{if(event.target===$('channels-dialog'))closeChannels();});
-$('channels-dialog').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeChannels();return;}if(event.key!=='Tab')return;const focusable=[...$('channels-dialog').querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled)')].filter(node=>node.getClientRects().length);const first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}});
 $('refresh-channels').addEventListener('click',refreshChannels);
-$('connect-channels').addEventListener('click',async()=>{try{await api('/api/action',{method:'POST',body:{action:'channels.connect'}});await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}});
-$('disconnect-channels').addEventListener('click',async()=>{try{await api('/api/action',{method:'POST',body:{action:'channels.disconnect'}});await refreshChannels();}catch(error){showError(error);}});
-$('channels-image').addEventListener('click',async event=>{const image=$('channels-image'),rect=image.getBoundingClientRect();if(!image.naturalWidth||!image.naturalHeight)return;const x=Math.round((event.clientX-rect.left)*image.naturalWidth/rect.width),y=Math.round((event.clientY-rect.top)*image.naturalHeight/rect.height);try{await api('/api/action',{method:'POST',body:{action:'channels.click',x,y}});await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}});
+$('connect-channels').addEventListener('click',()=>platformChatAction('platform.chat.connect'));
+$('login-channels').addEventListener('click',()=>platformChatAction('platform.chat.login'));
+$('disconnect-channels').addEventListener('click',()=>platformChatAction('platform.chat.disconnect'));
+$('channels-image').addEventListener('click',async event=>{const image=$('channels-image'),rect=image.getBoundingClientRect();if(!activePlatformId||!image.naturalWidth||!image.naturalHeight)return;const x=Math.round((event.clientX-rect.left)*image.naturalWidth/rect.width),y=Math.round((event.clientY-rect.top)*image.naturalHeight/rect.height);try{await api('/api/action',{method:'POST',body:{action:'platform.chat.click',id:activePlatformId,x,y}});await refreshChannels();}catch(error){$('channels-error').textContent=error.message;$('channels-error').hidden=false;}});
 $('refresh-setup').addEventListener('click',()=>refreshSetup().catch(showError));
 $('monitor-toggle').addEventListener('click',async()=>{try{if(monitorEnabled)await stopMonitor();else await startMonitor();}catch(error){await stopMonitor();showError(error);}});
 $('microphone-toggle').addEventListener('click',async()=>{try{if(microphoneEnabled)await stopMicrophone();else await startMicrophone();}catch(error){await stopMicrophone();showError(error);}});

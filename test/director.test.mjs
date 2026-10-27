@@ -267,3 +267,28 @@ test('reports distinguish sampled online peak from an observed platform historic
  const markdown=f.director.report('md')
  assert.match(markdown,/最高在线：34（已采集来源的较大值）/);assert.match(markdown,/采样最高在线：12/);assert.match(markdown,/平台报告最高在线：34/)
 })
+
+test('cross-platform comments keep independent identities and source labels in model context',async t=>{
+ const f=await fixture(t);f.config.platforms=[{id:'a',platform:'bilibili',name:'B站直播间'},{id:'b',platform:'douyin',name:'抖音直播间'}]
+ f.director.addComments([{id:'same',connectionId:'a',nickname:'观众',content:'部署问题'},{id:'same',connectionId:'b',nickname:'观众',content:'语音问题'}])
+ assert.equal(f.director.comments.length,2);assert.notEqual(f.director.comments[0].id,f.director.comments[1].id)
+ const context=JSON.parse(f.director._messages('comment',{candidates:f.director._freshComments()})[1].content)
+ assert.equal(context.candidates[0].platformName,'哔哩哔哩');assert.equal(context.candidates[1].platformName,'抖音')
+})
+test('metrics and report peaks stay separate for each platform and retain per-field freshness',async t=>{
+ const f=await fixture(t);f.config.platforms=[{id:'a',platform:'bilibili',name:'B站直播间'},{id:'b',platform:'douyin',name:'抖音直播间'}]
+ f.director.ingestMetrics({connectionId:'a',onlineUsers:12,peakOnlineUsers:34,heat:100});f.director.ingestMetrics({connectionId:'b',onlineUsers:20,heat:500})
+ const fresh=f.director._freshMetrics();assert.equal(fresh.onlineUsers,undefined);assert.equal(fresh.platforms.length,2)
+ const report=f.director.report('json');assert.equal(report.summary.peakOnline,null);assert.equal(report.platforms.find(p=>p.connectionId==='a').peakOnline,34);assert.equal(report.platforms.find(p=>p.connectionId==='b').peakOnline,20)
+ assert.match(f.director.report('csv'),/connectionId,platform,connectionName/);assert.match(f.director.report('md'),/B站直播间/)
+ f.advance(31000);f.director.ingestMetrics({connectionId:'a',likes:80});const after=f.director._freshMetrics().platforms;assert.equal(after.length,1);assert.equal(after[0].likes,80);assert.equal(after[0].onlineUsers,undefined)
+ assert.throws(()=>f.director.ingestMetrics({connectionId:'missing',heat:1000}),/不存在/)
+})
+
+test('lottery winners retain the originating platform when the same nickname exists elsewhere',async t=>{
+ const f=await fixture(t);f.config.platforms=[{id:'a',platform:'bilibili',name:'B站直播间'},{id:'b',platform:'douyin',name:'抖音直播间'}]
+ const now=Date.now();f.director.record.lottery={id:'draw',state:'waiting',keyword:'来玩',prize:'文化衫',startedAt:now,deadlineAt:now+5000,startSerial:0}
+ f.director.addComments([{id:'same',connectionId:'b',nickname:'同名观众',userId:'viewer-b',content:'来玩'},{id:'same',connectionId:'a',nickname:'同名观众',userId:'viewer-a',content:'来玩'}])
+ f.director._settleLottery();const winner=f.director.record.lottery.winner;assert.equal(winner.connectionId,'b');assert.equal(winner.platformName,'抖音');assert.equal(winner.userId,'viewer-b')
+ const turn=await f.director._turn({kind:'lottery-result'},new AbortController().signal,f.director.epoch);assert.match(turn.text,/来自抖音的同名观众/)
+})

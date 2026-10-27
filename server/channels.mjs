@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import puppeteer from 'puppeteer-core'
+import {browserDeadline,closePlatformBrowser} from './platform-browser.mjs'
 import { CHANNEL_METRICS, isChannelsLiveResponse, isChannelsMessageResponse, extractChannelsComments, extractChannelsMetrics, extractChannelsDomMetrics, readChannelsMetricTiles } from './channels-parser.mjs'
 
 const ENTRY='https://channels.weixin.qq.com/platform/live/liveBuild'
@@ -26,7 +27,7 @@ export class ChannelsCollector {
     this.dataDir=resolve(dataDir);this.onComments=onComments;this.onMetrics=onMetrics;this.onStatus=onStatus;this.launch=launch
     this.browser=null;this.page=null;this.frame=null;this.timer=null;this.connecting=null;this.capturing=false;this.wanted=false;this.closed=false;this.generation=0
     this.state='disconnected';this.error='';this.loginRequired=false;this.capturedAt=0;this.pagePath='';this.messageResponses=0;this.commentCount=0;this.lastMessageAt=0;this.lastMetricsAt=0;this.liveId='';this.platformState='unknown'
-    this.seen=new Set();this.pendingResponses=0;this.fields={};this.stateAt=0;this.stateSource='';this.lastDomAt=0;this.lastDeliveryAt=0;this.reconnects=0;this.reconnectTimer=null
+    this.seen=new Set();this.pendingResponses=0;this.fields={};this.stateAt=0;this.stateSource='';this.lastDomAt=0;this.lastDeliveryAt=0;this.reconnects=0;this.reconnectTimer=null;this.captureFailed=false
   }
   status(){return {state:this.state,label:LABELS[this.state],browserOpen:Boolean(this.browser?.connected&&this.page&&!this.page.isClosed()),loginRequired:this.loginRequired,messageResponses:this.messageResponses,commentCount:this.commentCount,lastMessageAt:this.lastMessageAt,lastMetricsAt:this.lastMetricsAt,capturedAt:this.capturedAt,pagePath:this.pagePath,error:this.error,width:WIDTH,height:HEIGHT,platformState:this.platformState,liveId:this.liveId,reconnects:this.reconnects,metrics:Object.fromEntries(Object.entries(this.fields).filter(([,item])=>Date.now()-item.at<=30000))}}
   getFrame(){return this.frame}
@@ -35,6 +36,7 @@ export class ChannelsCollector {
 
   async connect(){
     if(this.closed)throw new Error('视频号采集器已关闭')
+    if(this.captureFailed){await this.disconnect();this.captureFailed=false}
     this.wanted=true
     if(this.connecting)return this.connecting
     if(this.browser?.connected&&this.page&&!this.page.isClosed()){
@@ -53,8 +55,8 @@ export class ChannelsCollector {
     const args=['--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows','--mute-audio']
     if(process.env.CHROMIUM_NO_SANDBOX==='1'||process.getuid?.()===0)args.push('--no-sandbox')
     try{
-      const browser=await this.launch({executablePath,userDataDir:profile,headless:true,defaultViewport:{width:WIDTH,height:HEIGHT,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
-      if(generation!==this.generation||!this.wanted){await browser.close();return this.status()}
+      const browser=await this.launch({executablePath,userDataDir:profile,headless:true,protocolTimeout:30000,timeout:30000,defaultViewport:{width:WIDTH,height:HEIGHT,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
+      if(generation!==this.generation||!this.wanted){await closePlatformBrowser(browser);return this.status()}
       this.browser=browser;this.page=await browser.newPage();this._attach(this.page,generation)
       browser.on('targetcreated',async target=>{if(target.type()!=='page'||generation!==this.generation)return;const page=await target.page();if(page)this._attach(page,generation)})
       browser.once('disconnected',()=>{
@@ -125,13 +127,14 @@ export class ChannelsCollector {
     this.emit()
   }
   async capture(){
-    if(this.capturing||!this.page||this.page.isClosed()||!this.browser?.connected)return
+    if(this.capturing||this.captureFailed||!this.page||this.page.isClosed()||!this.browser?.connected)return
     this.capturing=true
+    const generation=this.generation
     try{
-      const generation=this.generation,page=this.page,state=await page.evaluate(readChannelsLoginState)
+      const page=this.page,state=await page.evaluate(readChannelsLoginState)
       if(generation!==this.generation||!this.wanted)return
       this.pagePath=String(state.path||'').slice(0,180);this.loginRequired=state.loginRequired
-      const frame=await page.screenshot({type:'jpeg',quality:78,optimizeForSpeed:true})
+      const frame=await browserDeadline(page.screenshot({type:'jpeg',quality:78,optimizeForSpeed:true}),10000,'视频号登录截图超时，请重新连接')
       if(generation!==this.generation||!this.wanted)return
       this.frame=Buffer.from(frame);this.capturedAt=Date.now()
       if(!this.loginRequired&&Date.now()-this.lastDomAt>=5000&&(this.pagePath.includes('/platform/live/liveBuild')||Date.now()-this.lastMessageAt<30000)){
@@ -141,7 +144,8 @@ export class ChannelsCollector {
         this._mergeMetrics(extractChannelsDomMetrics(rows))
       }
       this.error='';this._updateState();await this._deliverMetrics()
-    }finally{this.capturing=false}
+    }catch(error){if(error.code==='STUDIO_BROWSER_TIMEOUT'&&generation===this.generation&&this.wanted){this.captureFailed=true;clearInterval(this.timer);this.timer=null;this.error=safeError(error);this._state('error')}throw error}
+    finally{this.capturing=false}
   }
 
   async click({x,y}){
@@ -159,7 +163,8 @@ export class ChannelsCollector {
   async disconnect(){
     this.wanted=false;this.generation++;clearInterval(this.timer);this.timer=null;clearTimeout(this.reconnectTimer);this.reconnectTimer=null
     const browser=this.browser;this.browser=null;this.page=null;this.frame=null;this.loginRequired=false
-    if(browser)await browser.close().catch(()=>{})
+    if(browser)await closePlatformBrowser(browser)
+    await this.connecting?.catch(()=>{})
     this._state('disconnected');return this.status()
   }
   async close(){this.closed=true;await this.disconnect()}

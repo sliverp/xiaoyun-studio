@@ -1,11 +1,13 @@
-import {spawn} from 'node:child_process'
 import {existsSync, mkdirSync} from 'node:fs'
-import {resolve,join,isAbsolute} from 'node:path'
+import {join} from 'node:path'
 import {createHash} from 'node:crypto'
 import {performance} from 'node:perf_hooks'
 import puppeteer from 'puppeteer-core'
 import ffmpegStatic from 'ffmpeg-static'
-import {AudioMixer,SAMPLE_RATE,CHANNELS} from './audio-mixer.mjs'
+import {AudioMixer} from './audio-mixer.mjs'
+import {OutputGraph,normalizeDestinations,joinStreamDestination,redactMediaError,buildEncoderArgs} from './media-output.mjs'
+export {joinStreamDestination,redactMediaError}
+export const buildOutputArgs=buildEncoderArgs
 import {createPresentationNetworkPolicy} from './media-network.mjs'
 
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
@@ -16,40 +18,18 @@ export function detectTools(){
   const chromium=chromeCandidates().find(existsSync)||null,ffmpeg=ffmpegCandidates().find(existsSync)||null
   return {chromium:{available:Boolean(chromium),path:chromium},ffmpeg:{available:Boolean(ffmpeg),path:ffmpeg},ready:Boolean(chromium&&ffmpeg)}
 }
-/** Redact destination keys, URL credentials and render tokens from subprocess diagnostics. */
-export function redactMediaError(text,secrets=[]){
-  let value=String(text||'')
-  for(const secret of secrets.filter(Boolean).sort((a,b)=>b.length-a.length))value=value.split(String(secret)).join('[redacted]')
-  return value.replace(/(?:rtmps?:\/\/)[^\s'"<>]+/gi,'[RTMP destination]').replace(/([?&](?:renderToken|token|key|secret)=)[^&\s]+/gi,'$1[redacted]').slice(-1800)
-}
-/** Validate the output destination without converting a private key into user-visible state. */
-export function joinStreamDestination(rtmpUrl,streamKey=''){
-  if(!rtmpUrl)return ''
-  let url;try{url=new URL(rtmpUrl)}catch{throw new Error('请输入有效的 RTMP/RTMPS 推流地址')}
-  if(!['rtmp:','rtmps:'].includes(url.protocol)||url.username||url.password)throw new Error('推流仅支持不含登录凭据的 RTMP/RTMPS 地址')
-  if(/[|\r\n\0]/.test(streamKey)||/[|\r\n\0]/.test(rtmpUrl))throw new Error('推流密钥无效')
-  return streamKey?rtmpUrl.replace(/\/+$/,'')+'/'+streamKey:rtmpUrl
-}
-/** Build an FFmpeg pipeline with independent video and continuous PCM audio inputs. */
-export function buildOutputArgs({width,height,fps,videoBitrate,audioBitrate,destination,recordPath}){
-  const args=['-hide_banner','-loglevel','warning','-y','-thread_queue_size','128','-probesize','32768','-analyzeduration','0','-f','image2pipe','-framerate',String(fps),'-vcodec','mjpeg','-i','pipe:0','-thread_queue_size','512','-f','s16le','-ar',String(SAMPLE_RATE),'-ac',String(CHANNELS),'-i','pipe:3','-map','0:v:0','-map','1:a:0','-vf',`scale=${width}:${height}:flags=fast_bilinear,format=yuv420p`,'-c:v','libx264','-preset','veryfast','-tune','zerolatency','-b:v',videoBitrate,'-maxrate',videoBitrate,'-bufsize',String(Number.parseInt(videoBitrate)*2)+'k','-g',String(fps*2),'-c:a','aac','-b:a',audioBitrate,'-ar',String(SAMPLE_RATE),'-progress','pipe:4','-stats_period','1']
-  const teeUrl=value=>String(value).replace(/[\\'|]/g,character=>'\\'+character)
-  if(destination&&recordPath)args.push('-f','tee',`[f=flv]${teeUrl(destination)}|[f=mp4:movflags=+frag_keyframe+empty_moov]${teeUrl(recordPath)}`)
-  else if(destination)args.push('-f','flv',destination)
-  else args.push('-movflags','+frag_keyframe+empty_moov','-f','mp4',recordPath)
-  return args
-}
-
 /** Own isolated browser rendering, continuous audio mixing, recording and RTMP output. */
 export class MediaEngine {
   constructor({dataDir,baseUrl,renderToken,getSettings,onStatus=()=>{},onMeter=()=>{},onFrame=()=>{},onAudio=()=>{}}){
     Object.assign(this,{dataDir,baseUrl,renderToken,getSettings,onStatus,onMeter,onFrame,onAudio})
     this.networkPolicy=createPresentationNetworkPolicy(baseUrl)
-    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.output=null;this.outputWanted=false;this.outputGeneration=0;this.reconnectTimer=null;this.lastOutput={active:false,mode:null,state:'stopped',error:'',seconds:0,recording:false,recordingFile:null};this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0};this.reconnects=0
+    this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0}
     mkdirSync(dataDir,{recursive:true})
+    this.outputGraph=new OutputGraph({ffmpeg:this.tools.ffmpeg.path,dataDir,getFrame:()=>this.frame,renderToken,onStatus:()=>this.emit(),onDrop:()=>{this.droppedFrames++}})
     if(this.tools.ffmpeg.available)this.mixer=new AudioMixer({ffmpeg:this.tools.ffmpeg.path,onPcm:buffer=>this.writePcm(buffer),canOutput:()=>!this.output?.audioBlocked,onMeter:meter=>{this.meter=meter;this.onMeter(meter)}})
   }
-  status(){return {ready:Boolean(this.browser&&this.programPage),initialized:Boolean(this.browser&&this.programPage),fps:this.getSettings().output?.fps||15,currentFps:this.captureFps,droppedFrames:this.droppedFrames,browserRecovering:Boolean(this.browserRecovery),rendering:Boolean(this.captureTimer&&this.programPage),captureFps:this.captureFps,width:this.programPage?.viewport()?.width||0,height:this.programPage?.viewport()?.height||0,slide:{...this.slide},audio:{...this.meter,queued:this.mixer?.queue.length||0},output:this.output?{active:this.output.encodedFrames>0,mode:this.output.destination?(this.output.recordPath?'both':'rtmp'):'record',startedAt:this.output.wallStartedAt,state:this.output.state,error:this.output.error,seconds:this.output.seconds,fps:this.output.fps,bytes:this.output.bytes,encodedFrames:this.output.encodedFrames,reconnects:this.reconnects,recording:Boolean(this.output.recordPath),recordingFile:this.output.recordPath?this.output.recordPath.split(/[\\/]/).pop():null}:this.lastOutput,error:this.lastError}}
+  get output(){return this.outputGraph.encoder}
+  status(){return {ready:Boolean(this.browser&&this.programPage),initialized:Boolean(this.browser&&this.programPage),fps:this.getSettings().output?.fps||15,currentFps:this.captureFps,droppedFrames:this.droppedFrames,browserRecovering:Boolean(this.browserRecovery),rendering:Boolean(this.captureTimer&&this.programPage),captureFps:this.captureFps,width:this.programPage?.viewport()?.width||0,height:this.programPage?.viewport()?.height||0,slide:{...this.slide},audio:{...this.meter,queued:this.mixer?.queue.length||0},output:this.outputGraph.status(),error:this.lastError}}
   emit(){this.onStatus(this.status())}
   async initialize(){
     if(this.closed)throw new Error('渲染引擎已关闭')
@@ -266,73 +246,32 @@ export class MediaEngine {
   setBgm(path,options){this.mixer?.setBgm(path,options);this.emit()}
   writePcm(buffer){
     try{this.onAudio(buffer)}catch{/* A disconnected operator monitor must not interrupt the broadcast audio clock. */}
-    const out=this.output;if(!out||out.stopping||!out.child?.stdio[3]?.writable)return
-    if(!out.child.stdio[3].write(buffer)){out.audioBlocked=true;out.audioBlockedSince=performance.now();out.child.stdio[3].once('drain',()=>{if(this.output===out)out.audioBlocked=false})}
+    this.outputGraph.writePcm(buffer)
   }
   validateOutput(value){
     const width=value.width||1280,height=value.height||720,fps=value.fps||15
     if(!Number.isInteger(width)||!Number.isInteger(height)||width<640||height<360||width>3840||height>2160||width%2||height%2)throw new Error('输出分辨率应为偶数，范围640×360至3840×2160')
     if(!Number.isInteger(fps)||fps<5||fps>30)throw new Error('输出帧率应为5–30')
-    const videoBitrate=value.videoBitrate||'2500k',audioBitrate=value.audioBitrate||'128k'
+    const videoBitrate=typeof value.videoBitrate==='number'?value.videoBitrate+'k':value.videoBitrate||'2500k',audioBitrate=typeof value.audioBitrate==='number'?value.audioBitrate+'k':value.audioBitrate||'128k'
     if(!/^\d{2,5}k$/.test(videoBitrate)||!/^\d{2,3}k$/.test(audioBitrate))throw new Error('请输入有效的音视频码率，例如2500k和128k')
     return {width,height,fps,videoBitrate,audioBitrate}
   }
-  async startOutput(value){
-    if(this.output||this.outputWanted)throw new Error('输出已经启动，请先停止后再修改推流设置')
-    const destination=joinStreamDestination(value.rtmpUrl,value.streamKey),options=this.validateOutput(value)
-    if(!destination&&!value.record)throw new Error('请填写推流地址，或启用本地录制')
-    const generation=++this.outputGeneration;this.outputWanted=true;this.lastOutput={...this.lastOutput,active:false,state:'preparing',error:''};this.emit()
-    try{await this.initialize()}catch(error){if(this.outputGeneration===generation)this.outputWanted=false;throw error}
-    if(!this.outputWanted||generation!==this.outputGeneration)throw new DOMException('推流启动已取消','AbortError')
-    const directory=join(this.dataDir,'recordings');mkdirSync(directory,{recursive:true})
-    const recordPath=value.record?join(directory,new Date().toISOString().replace(/[:.]/g,'-')+'.mp4'):null
-    this.reconnects=0
-    await this.startEncoder({...options,destination,recordPath,generation,secrets:[value.streamKey,this.renderToken]})
+  /** Register cancellable output intent before preparing optional decks/BGM; a stopped prepare cannot start encoding. */
+  async startOutput(value,{prepare}={}){
+    if(prepare!==undefined&&typeof prepare!=='function')throw new Error('输出准备回调无效')
+    const options=this.validateOutput(value),destinations=normalizeDestinations(value)
+    await this.outputGraph.start({...options,destinations,record:value.record===true},async({signal})=>{
+      signal.throwIfAborted();await this.initialize();signal.throwIfAborted();await prepare?.({signal});signal.throwIfAborted()
+      await this.programPage.setViewport({width:options.width,height:options.height,deviceScaleFactor:1});signal.throwIfAborted();await this.capture()
+    })
     return this.status()
   }
-  async startEncoder(options){
-    await this.programPage.setViewport({width:options.width,height:options.height,deviceScaleFactor:1});await this.capture()
-    const args=buildOutputArgs(options),child=spawn(this.tools.ffmpeg.path,args,{stdio:['pipe','ignore','pipe','pipe','pipe'],windowsHide:true})
-    const out={...options,child,state:'starting',error:'',seconds:0,encodedFrames:0,fps:0,bytes:null,audioBlocked:false,videoBlocked:false,stopping:false,startedAt:performance.now(),wallStartedAt:Date.now(),lastProgressAt:performance.now(),timer:null,watchdog:null,closed:null}
-    this.output=out;this.lastError=''
-    let errorText='',progress=''
-    child.stderr.on('data',buffer=>{errorText=(errorText+buffer.toString()).slice(-6000)})
-    child.stdio[4].on('data',buffer=>{progress+=buffer.toString();let line;while((line=progress.indexOf('\n'))>=0){const item=progress.slice(0,line);progress=progress.slice(line+1);const [key,val]=item.split('=');if(key==='frame'){out.encodedFrames=Number(val)||out.encodedFrames;if(out.encodedFrames)out.state='streaming';out.lastProgressAt=performance.now()}if(key==='fps')out.fps=Number(val)||0;if(key==='total_size')out.bytes=Number.isFinite(Number(val))?Number(val):null;if(key==='out_time_us')out.seconds=(Number(val)||0)/1000000;if(key==='progress')this.emit()}})
-    for(const stream of [child.stdin,child.stdio[3]])stream.on('error',()=>{})
-    child.once('error',()=>{out.error='无法启动 FFmpeg 推流进程';this.lastError=out.error;this.emit()})
-    out.closed=new Promise(resolve=>child.once('close',(code,signal)=>{
-      clearInterval(out.timer);clearInterval(out.watchdog)
-      if(this.output===out)this.output=null
-      const error=out.stopping?'':redactMediaError(errorText||'编码进程退出（'+(code??signal)+'）',options.secrets)
-      this.lastOutput={active:false,mode:out.destination?(out.recordPath?'both':'rtmp'):'record',state:error?'error':'stopped',error,seconds:out.seconds,bytes:out.bytes,fps:out.fps,encodedFrames:out.encodedFrames,reconnects:this.reconnects,recording:false,recordingFile:out.recordPath?out.recordPath.split(/[\\/]/).pop():null};this.lastError=error;this.emit();resolve()
-      if(error&&!this.queueReconnect(options)){this.outputWanted=false;this.emit()}
-    }))
-    out.timer=setInterval(()=>{
-      if(this.output!==out||out.stopping||!this.frame)return
-      if(out.videoBlocked){this.droppedFrames++;return}
-      if(!child.stdin.write(this.frame)){out.videoBlocked=true;child.stdin.once('drain',()=>{if(this.output===out)out.videoBlocked=false})}
-    },1000/options.fps)
-    out.watchdog=setInterval(()=>{if(out.stopping)return;const now=performance.now();if(now-out.lastProgressAt>20000||out.audioBlocked&&now-out.audioBlockedSince>10000){errorText='编码器长时间没有输出进度，已停止并尝试重新连接';child.kill('SIGTERM')}},2000)
-    this.emit()
-    await Promise.race([out.closed.then(()=>{if(!out.stopping&&!this.reconnectTimer)throw new Error('推流启动失败：'+this.lastOutput.error)}),sleep(150)])
+  async addDestination(value){
+    if(!this.outputGraph.status().running)return this.startOutput({...this.getSettings().output,destinations:[value]})
+    await this.outputGraph.addDestination(value);return this.status()
   }
-  queueReconnect(options){
-    if(!this.outputWanted||this.closed||options.generation!==this.outputGeneration||!options.destination||this.reconnects>=3)return false
-    const delay=1000*2**this.reconnects;this.reconnects++
-    this.lastOutput={...this.lastOutput,state:'reconnecting',reconnects:this.reconnects};this.emit()
-    this.reconnectTimer=setTimeout(()=>{
-      this.reconnectTimer=null
-      if(!this.output&&this.outputWanted&&!this.closed&&options.generation===this.outputGeneration)this.startEncoder({...options,recordPath:options.recordPath?options.recordPath.replace(/\.mp4$/,'.retry'+this.reconnects+'.mp4'):null}).catch(cause=>{this.lastError=redactMediaError(cause.message,options.secrets);this.emit()})
-    },delay)
-    this.reconnectTimer.unref?.();return true
-  }
-  async stopOutput(){
-    this.outputWanted=false;this.outputGeneration++;clearTimeout(this.reconnectTimer);this.reconnectTimer=null
-    const out=this.output
-    if(!out){this.lastOutput={...this.lastOutput,state:'stopped',active:false};this.emit();return}
-    out.stopping=true;out.state='stopping';clearInterval(out.timer);clearInterval(out.watchdog);out.child.stdin.end();out.child.stdio[3].end();this.emit()
-    const killer=setTimeout(()=>out.child.kill('SIGKILL'),5000);killer.unref()
-    await out.closed;clearTimeout(killer)
-  }
-  async close(){if(this.closed)return;this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null;this.mixer?.close();await this.stopOutput();await this.browser?.close().catch(()=>{});this.browser=null;this.programPage=null}
+  async stopDestination(id){await this.outputGraph.stopDestination(id);return this.status()}
+  async retryDestination(id){await this.outputGraph.retryDestination(id);return this.status()}
+  async stopOutput(){await this.outputGraph.stop();return this.status()}
+  async close(){if(this.closed)return;this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null;this.mixer?.close();await this.outputGraph.close();await this.browser?.close().catch(()=>{});this.browser=null;this.programPage=null}
 }
