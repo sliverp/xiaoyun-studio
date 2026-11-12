@@ -93,7 +93,7 @@ test('invalid manifests and invalid target settings never replace the active bro
  const reloaded=new ProjectLibrary({root,dataDir,env:{}})
  assert.throws(()=>reloaded.activate(target.id),error=>!error.message.includes('private-fixture-content'));assert.equal(reloaded.activeId,active)
  const saved=JSON.parse(readFileSync(library.file,'utf8'));saved.activeId='../outside';atomicJson(library.file,saved)
- assert.throws(()=>new ProjectLibrary({root,dataDir,env:{}}),/当前场次记录不存在/)
+ assert.throws(()=>new ProjectLibrary({root,dataDir,env:{}}),/当前场景记录不存在/)
  assert.throws(()=>library.create({name:'bad\nname'}));assert.throws(()=>library.create({name:'复制',copyCurrent:'yes'}))
 })
 

@@ -66,6 +66,14 @@ function statistics(target,key,value){
  if(key==='out_time_us'&&Number.isFinite(number))target.seconds=number/1e6
 }
 const emptyStats=()=>({frames:0,fps:0,bytes:0,seconds:0,lastProgressAt:performance.now()})
+/** A brief successful write must not erase the failure budget of a repeatedly rejected stream. */
+export function sinkProgress(sink,key,value,now=performance.now()){
+ statistics(sink,key,value)
+ if(sink.frames>0&&sink.bytes>0&&sink.seconds>0){
+  sink.state='streaming';sink.error=''
+  if(now-sink.attemptStartedAt>=10000)sink.failures=0
+ }
+}
 function safeSink(sink){
  return {id:sink.id,platform:sink.platform,name:sink.name,active:Boolean(sink.process&&sink.state==='streaming'),state:sink.state,error:sink.error,startedAt:sink.startedAt,seconds:sink.seconds,bytes:sink.bytes,fps:sink.fps,encodedFrames:sink.frames,reconnects:sink.reconnects}
 }
@@ -136,7 +144,7 @@ export class OutputGraph {
  isCurrent(sink){return sink.kind==='record'?this.recording===sink:this.sinks.get(sink.id)===sink}
  startSink(sink){
   if(!this.wanted||!this.encoder||!sink.wanted||!this.isCurrent(sink)||sink.process)return
-  clearTimeout(sink.timer);sink.timer=null;sink.attempt++;sink.startedAt=Date.now();sink.state='starting';Object.assign(sink,emptyStats())
+  clearTimeout(sink.timer);sink.timer=null;sink.attempt++;sink.startedAt=Date.now();sink.attemptStartedAt=performance.now();sink.state='starting';Object.assign(sink,emptyStats())
   if(sink.kind==='record'&&sink.attempt>1)sink.recordPath=sink.recordPath.replace(/(?:\.retry\d+)?\.mp4$/,'.retry'+(sink.attempt-1)+'.mp4')
   const child=spawn(this.ffmpeg,buildRemuxArgs(sink.kind==='record'?{recordPath:sink.recordPath}:{destination:sink.destination}),{stdio:['pipe','ignore','pipe','pipe'],windowsHide:true})
   const owned={child,stopping:false,generation:this.generation,attempt:sink.attempt,blockedSince:0,reason:''};sink.process=owned;let detail=''
@@ -145,8 +153,7 @@ export class OutputGraph {
   child.once('error',()=>{detail='无法启动平台发送进程'})
   progress(child.stdio[3],(key,value)=>{
    if(sink.process!==owned||owned.stopping||owned.reason)return
-   statistics(sink,key,value)
-   if(sink.frames>0){sink.state='streaming';sink.error='';sink.failures=0}
+   sinkProgress(sink,key,value)
    if(key==='progress')this.emit()
   })
   owned.closed=new Promise(resolve=>child.once('close',(code,signal)=>{

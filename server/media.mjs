@@ -9,6 +9,8 @@ import {OutputGraph,normalizeDestinations,joinStreamDestination,redactMediaError
 export {joinStreamDestination,redactMediaError}
 export const buildOutputArgs=buildEncoderArgs
 import {createPresentationNetworkPolicy} from './media-network.mjs'
+import {closePlatformBrowser} from './platform-browser.mjs'
+import {containerMemory,renderMaintenance} from './render-resources.mjs'
 
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 const chromeCandidates=()=>[process.env.CHROMIUM_PATH,process.env.PUPPETEER_EXECUTABLE_PATH,'/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/google-chrome','/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'].filter(Boolean)
@@ -24,19 +26,54 @@ export class MediaEngine {
     Object.assign(this,{dataDir,baseUrl,renderToken,getSettings,onStatus,onMeter,onFrame,onAudio,launch})
     this.networkPolicy=createPresentationNetworkPolicy(baseUrl)
     this.tools=detectTools();this.browser=null;this.programPage=null;this.deckPage=null;this.deckLastUrl='';this.browserHealthy=false;this.browserRecovery=null;this.browserRetryTimer=null;this.resolveBrowserRetry=null;this.initializing=null;this.closingPromise=null;this.closed=false;this.captureTimer=null;this.frame=null;this.slideFrame=null;this.slide={pageNumber:0,pageCount:0,pageKey:'',title:'',text:'',notes:'',revision:0};this.lastSlideHash='';this.captureCount=0;this.lastCaptureReport=performance.now();this.captureFps=0;this.droppedFrames=0;this.capturing=false;this.screenshotTail=Promise.resolve();this.deckTail=Promise.resolve();this.deckBusy=false;this.lastError='';this.meter={rms:0,voiceRms:0,bgmRms:0}
+    this.browserCleanup=null;this.browserCleanups=new WeakMap();this.captureOwner=null;this.browserRetryAt=0;this.browserOpenedAt=0;this.lastMaintenanceAt=0;this.maintenanceTimer=null
     mkdirSync(dataDir,{recursive:true})
     this.outputGraph=new OutputGraph({ffmpeg:this.tools.ffmpeg.path,dataDir,getFrame:()=>this.frame,renderToken,onStatus:()=>this.emit(),onDrop:()=>{this.droppedFrames++}})
     if(this.tools.ffmpeg.available)this.mixer=new AudioMixer({ffmpeg:this.tools.ffmpeg.path,onPcm:buffer=>this.writePcm(buffer),canOutput:()=>!this.output?.audioBlocked,onMeter:meter=>{this.meter=meter;this.onMeter(meter)}})
   }
   get output(){return this.outputGraph.encoder}
-  status(){return {ready:Boolean(this.browser&&this.programPage),initialized:Boolean(this.browser&&this.programPage),fps:this.getSettings().output?.fps||15,currentFps:this.captureFps,droppedFrames:this.droppedFrames,browserRecovering:Boolean(this.browserRecovery),rendering:Boolean(this.captureTimer&&this.programPage),captureFps:this.captureFps,width:this.programPage?.viewport()?.width||0,height:this.programPage?.viewport()?.height||0,slide:{...this.slide},audio:{...this.meter,queued:this.mixer?.queue.length||0},output:this.outputGraph.status(),error:this.lastError}}
+  browserReady(){return Boolean(this.browserHealthy&&this.browser&&this.browser.connected!==false&&this.programPage&&!this.programPage.isClosed?.())}
+  status(){return {ready:this.browserReady(),initialized:this.browserReady(),fps:this.getSettings().output?.fps||15,currentFps:this.captureFps,droppedFrames:this.droppedFrames,browserRecovering:Boolean(this.browserRecovery),rendering:Boolean(this.captureTimer&&this.browserReady()),captureFps:this.captureFps,width:this.programPage?.viewport()?.width||0,height:this.programPage?.viewport()?.height||0,slide:{...this.slide},audio:{...this.meter,queued:this.mixer?.queue.length||0},output:this.outputGraph.status(),error:this.lastError}}
   emit(){this.onStatus(this.status())}
   async initialize(){
     if(this.closed)throw new Error('渲染引擎已关闭')
     if(this.initializing)return this.initializing
-    if(this.browser&&this.programPage)return
-    this.initializing=this.openBrowser().finally(()=>{this.initializing=null})
+    if(this.browserReady())return
+    if(Date.now()<this.browserRetryAt)throw new Error('后台渲染暂未恢复，将在稍后自动重试')
+    this.initializing=(async()=>{
+      await this.browserCleanup
+      if(this.closed)throw new DOMException('渲染启动已取消','AbortError')
+      if(this.browser)await this.releaseBrowser(this.browser)
+      await this.openBrowser()
+    })().finally(()=>{this.initializing=null})
     return this.initializing
+  }
+  /** Detach references before closing; an old page event can never tear down a replacement. */
+  releaseBrowser(owned){
+    if(!owned)return this.browserCleanup||Promise.resolve()
+    if(this.browserCleanups.has(owned))return this.browserCleanups.get(owned)
+    if(this.browser===owned){this.browserHealthy=false;this.browser=null;this.programPage=null;this.deckPage=null;this.captureOwner=null;this.capturing=false;this.captureFps=0;this.captureCount=0;this.lastCaptureReport=performance.now();clearInterval(this.captureTimer);this.captureTimer=null;clearInterval(this.maintenanceTimer);this.maintenanceTimer=null;this.screenshotTail=Promise.resolve()}
+    const cleanup=Promise.resolve(this.browserCleanup).then(()=>closePlatformBrowser(owned))
+    const settled=cleanup.finally(()=>{if(this.browserCleanup===settled)this.browserCleanup=null})
+    this.browserCleanups.set(owned,settled);this.browserCleanup=settled;return settled
+  }
+  loseBrowser(owned,reason){
+    if(this.closed||owned!==this.browser)return
+    const recover=this.browserHealthy
+    this.lastError=reason
+    const cleanup=this.releaseBrowser(owned)
+    cleanup.catch(()=>{/* A later launch still waits for bounded cleanup of this owned browser. */})
+    this.emit()
+    if(recover)void this.recoverBrowser()
+  }
+  watchPage(page,owned){
+    page.on('error',()=>this.loseBrowser(owned,'后台渲染页面意外退出，正在自动重建画面'))
+    page.once('close',()=>this.loseBrowser(owned,'后台渲染页面已关闭，正在自动重建画面'))
+  }
+  maintainBrowser(){
+    if(!this.browserReady()||this.initializing||this.browserRecovery)return
+    const now=Date.now(),reason=renderMaintenance({now,openedAt:this.browserOpenedAt,lastMaintenanceAt:this.lastMaintenanceAt,outputRunning:this.outputGraph.status().running,voiceActive:Boolean(this.mixer?.queue.length),memory:containerMemory()})
+    if(reason){this.lastMaintenanceAt=now;this.loseBrowser(this.browser,reason)}
   }
   async openBrowser(){
     if(!this.tools.ready)throw new Error('缺少 Chromium 或 FFmpeg，请先完成部署依赖安装')
@@ -44,34 +81,43 @@ export class MediaEngine {
     const profile=join(this.dataDir,'renderer-profile');mkdirSync(profile,{recursive:true})
     const args=['--autoplay-policy=no-user-gesture-required','--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows','--mute-audio']
     if(process.env.CHROMIUM_NO_SANDBOX==='1'||process.getuid?.()===0)args.push('--no-sandbox')
+    const savedUrl=this.deckLastUrl,savedPage=this.slide.pageNumber;let owned
     try{
-      this.browser=await this.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,protocolTimeout:30000,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
-      if(this.closed){await this.browser.close();this.browser=null;throw new DOMException('渲染启动已取消','AbortError')}
-      const owned=this.browser
+      owned=await this.launch({executablePath:this.tools.chromium.path,userDataDir:profile,headless:true,protocolTimeout:30000,defaultViewport:{width,height,deviceScaleFactor:1},handleSIGINT:false,handleSIGTERM:false,handleSIGHUP:false,args})
+      if(this.closed){throw new DOMException('渲染启动已取消','AbortError')}
+      this.browser=owned
       owned.once('disconnected',()=>{
-        if(this.browser!==owned)return
-        const recover=this.browserHealthy&&!this.closed
-        this.browserHealthy=false;this.browser=null;this.programPage=null;this.deckPage=null
-        if(recover){this.lastError='后台渲染浏览器断开，正在尝试恢复';this.emit();owned.process()?.kill('SIGTERM');void this.recoverBrowser()}
+        this.loseBrowser(owned,'后台渲染浏览器断开，正在尝试恢复')
       })
-      this.programPage=await this.browser.newPage()
+      // Reuse Chromium's initial blank tab instead of keeping an unused renderer alive.
+      this.programPage=(await owned.pages()).find(page=>!page.isClosed()&&page.url()==='about:blank')||await owned.newPage()
+      this.watchPage(this.programPage,owned)
       await this.authenticateLocalRequests(this.programPage)
       await this.programPage.setBypassServiceWorker(true);await this.programPage.setCacheEnabled(false)
       const url=new URL('/program',this.baseUrl);url.searchParams.set('renderToken',this.renderToken)
       await this.programPage.goto(url.href,{waitUntil:'domcontentloaded',timeout:30000})
       await this.programPage.evaluate(()=>document.fonts.ready)
-      await sleep(200);if(this.closed)throw new DOMException('渲染启动已取消','AbortError');await this.capture();if(this.closed)throw new DOMException('渲染启动已取消','AbortError');this.startCapture();this.browserHealthy=true;this.lastError='';this.emit()
-    }catch(error){this.browserHealthy=false;this.lastError=redactMediaError(error.message,[this.renderToken]);await this.browser?.close().catch(()=>{});this.browser=null;this.programPage=null;throw new Error('后台渲染初始化失败：'+this.lastError)}
+      await sleep(200);if(this.closed||this.browser!==owned)throw new DOMException('渲染启动已取消','AbortError')
+      if(savedUrl)await this.withDeck(async()=>{await this.openDeck(savedUrl);if(savedPage>0&&this.slide.pageNumber!==savedPage)await this.restoreDeck(savedPage)})
+      await this.capture();if(this.closed||this.browser!==owned||this.programPage.isClosed())throw new DOMException('渲染启动已取消','AbortError')
+      this.browserHealthy=true;this.browserRetryAt=0;this.browserOpenedAt=Date.now();this.startCapture();this.lastError=''
+      this.maintenanceTimer=setInterval(()=>this.maintainBrowser(),30000);this.maintenanceTimer.unref?.();this.emit()
+    }catch(error){
+      const detail=redactMediaError(error.message,[this.renderToken]),message=/Session closed|Target closed|Connection closed|Page crashed|page has been closed/i.test(detail)?'渲染页面意外退出，请稍后重试':detail
+      await this.releaseBrowser(owned).catch(()=>{});if(!this.closed){this.lastError=message;this.browserRetryAt=Date.now()+1000;queueMicrotask(()=>{if(!this.closed&&!this.browserRecovery&&!this.browserReady())void this.recoverBrowser()})}
+      if(error.name==='AbortError')throw error
+      throw new Error('后台渲染初始化失败：'+message)
+    }
   }
   async recoverBrowser(){
     if(this.closed||this.browserRecovery)return
-    const targetPage=this.slide.pageNumber,lastUrl=this.deckLastUrl
     const recovery=(async()=>{
       for(let attempt=0;attempt<3&&!this.closed;attempt++){
         await new Promise(resolve=>{this.resolveBrowserRetry=resolve;this.browserRetryTimer=setTimeout(resolve,1000*2**attempt)});this.browserRetryTimer=null;this.resolveBrowserRetry=null;if(this.closed)return
-        try{await this.initialize();if(lastUrl){await this.openPresentation(lastUrl);if(targetPage>0&&this.slide.pageNumber!==targetPage)await this.restoreSlide(targetPage)}this.lastError='';this.emit();return}
+        try{await this.initialize();this.lastError='';this.emit();return}
         catch(cause){this.lastError='渲染恢复失败：'+redactMediaError(cause.message,[this.renderToken]);this.emit()}
       }
+      if(!this.closed){this.browserRetryAt=Date.now()+30000;this.lastError='后台渲染暂未恢复，将在30秒后自动重试';this.browserRetryTimer=setTimeout(()=>{this.browserRetryTimer=null;if(!this.closed&&!this.browserReady())void this.recoverBrowser()},30000);this.browserRetryTimer.unref?.();this.emit()}
     })()
     this.browserRecovery=recovery
     try{await recovery}finally{if(this.browserRecovery===recovery)this.browserRecovery=null;this.emit()}
@@ -80,16 +126,18 @@ export class MediaEngine {
     if(this.closed)return
     if(this.captureTimer)clearInterval(this.captureTimer)
     const fps=Math.max(5,Math.min(30,this.getSettings().output?.fps||15))
-    this.captureTimer=setInterval(()=>this.capture().catch(error=>{this.lastError=redactMediaError(error.message,[this.renderToken]);this.emit()}),1000/fps)
+    this.captureTimer=setInterval(()=>this.capture().catch(error=>{if(!this.closed&&error.name!=='AbortError'&&!this.browserRecovery){this.lastError=redactMediaError(error.message,[this.renderToken]);this.emit()}}),1000/fps)
   }
   async capture(){
     if(this.closed||!this.programPage||this.capturing||this.deckBusy)return
-    this.capturing=true
+    this.capturing=true;const capture={},owned=this.browser,page=this.programPage;this.captureOwner=capture
     try{
-      this.frame=Buffer.from(await this.snapshotPage(this.programPage,{type:'jpeg',quality:82,optimizeForSpeed:true}))
+      const frame=await this.snapshotPage(page,{type:'jpeg',quality:82,optimizeForSpeed:true})
+      if(this.closed||this.browser!==owned||this.programPage!==page)return
+      this.frame=Buffer.from(frame)
       this.onFrame(this.frame);this.captureCount++
       const now=performance.now();if(now-this.lastCaptureReport>=2000){this.captureFps=Math.round(this.captureCount*10000/(now-this.lastCaptureReport))/10;this.captureCount=0;this.lastCaptureReport=now;this.emit()}
-    }finally{this.capturing=false}
+    }finally{if(this.captureOwner===capture){this.captureOwner=null;this.capturing=false}}
   }
   /** Keep tab activation and screenshots sequential; a stuck capture restarts only the owned browser. */
   snapshotPage(page,options){
@@ -101,7 +149,9 @@ export class MediaEngine {
       try{
         return await Promise.race([(async()=>{await page.bringToFront();return page.screenshot(options)})(),deadline])
       }catch(error){
+        if(this.closed||this.browser!==owned)throw new DOMException('旧渲染请求已取消','AbortError')
         if(error.code==='RENDER_TIMEOUT'&&this.browser===owned&&!this.closed){this.lastError=error.message;owned.process()?.kill('SIGKILL')}
+        else if(/Session closed|Target closed|Connection closed|Page crashed|page has been closed/i.test(error.message))this.loseBrowser(owned,'后台渲染页面意外退出，正在自动重建画面')
         throw error
       }finally{clearTimeout(timer)}
     })
@@ -146,7 +196,7 @@ export class MediaEngine {
     if(original.origin===new URL(this.baseUrl).origin&&original.pathname.startsWith('/assets/')&&/\.pdf$/i.test(original.pathname)){
       target=new URL('/pdf-viewer',this.baseUrl);target.searchParams.set('file',original.href)
     }
-    if(!this.deckPage||this.deckPage.isClosed()){this.deckPage=await this.browser.newPage();await this.authenticateLocalRequests(this.deckPage)}
+    if(!this.deckPage||this.deckPage.isClosed()){this.deckPage=await this.browser.newPage();this.watchPage(this.deckPage,this.browser);await this.authenticateLocalRequests(this.deckPage)}
     await this.deckPage.bringToFront()
     await this.deckPage.setViewport({width:1280,height:720,deviceScaleFactor:1});await this.deckPage.setBypassServiceWorker(true);await this.deckPage.setCacheEnabled(false)
     await this.deckPage.goto(target.href,{waitUntil:'domcontentloaded',timeout:30000})
@@ -182,6 +232,24 @@ export class MediaEngine {
     this.deckLastUrl=this.deckPage.url();this.emit();return {...this.slide}
   }
   async readSlide(){return this.captureSlide()}
+  /** Read ahead from deck DOM/PDF text without navigating or capturing the on-air slide. */
+  async readSlideAt(number){
+    if(!Number.isInteger(number)||number<1||number>this.slide.pageCount||!this.deckPage||this.deckPage.isClosed())return null
+    return this.deckPage.evaluate(async({number,total})=>{
+      let content
+      if(typeof window.studioDeck?.readSlide==='function')content=await window.studioDeck.readSlide(number)
+      else{
+        const groups=['.slide','.remark-slide-content','.reveal .slides section','[data-slide]'].map(selector=>[...document.querySelectorAll(selector)].filter(root=>selector!=='.reveal .slides section'||!root.querySelector('section')))
+        const all=groups.find(roots=>roots.length===total),root=all?.[number-1]
+        if(!root)return null
+        const copy=root.cloneNode(true);copy.querySelectorAll('script,style,.dsh-speaker-notes,[hidden]').forEach(node=>node.remove())
+        content={title:document.title.slice(0,300),text:(copy.textContent||'').replace(/\s+/g,' ').trim().slice(0,12000),notes:(root.querySelector('.dsh-speaker-notes')?.textContent||'').trim().slice(0,6000)}
+      }
+      if(!content||typeof content.text!=='string')return null
+      const identity=new URL(location.href);identity.hash='';identity.searchParams.delete('renderToken');identity.searchParams.delete('page')
+      return {pageNumber:number,pageCount:total,pageKey:identity.href+'|'+number,title:String(content.title||document.title).slice(0,300),text:content.text.slice(0,12000),notes:String(content.notes||'').slice(0,6000)}
+    },{number,total:this.slide.pageCount})
+  }
   async waitForSlide(target){
     try{await this.deckPage.waitForFunction(target=>{
       const numbered=document.querySelector('[data-slide-count]'),counter=document.querySelector('#counter'),match=counter?.textContent?.match(/(\d+)\s*\/\s*(\d+)/)
@@ -277,12 +345,12 @@ export class MediaEngine {
   /** Wait for pending browser launches and all owned media cleanup before releasing the renderer profile. */
   async close(){
     if(this.closingPromise)return this.closingPromise
-    this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null
+    this.closed=true;clearTimeout(this.browserRetryTimer);this.resolveBrowserRetry?.();this.resolveBrowserRetry=null;clearInterval(this.captureTimer);this.captureTimer=null;clearInterval(this.maintenanceTimer);this.maintenanceTimer=null
     const initializing=this.initializing,browser=this.browser;this.browser=null
     this.closingPromise=(async()=>{
       const closeBrowser=async()=>{
-        const cleanup=await Promise.allSettled([Promise.resolve().then(()=>browser?.close()),Promise.resolve(initializing).catch(()=>{/* The initialization caller receives its startup error; shutdown still waits for late-launch cleanup. */})])
-        if(this.browser&&this.browser!==browser){const late=this.browser;cleanup.push(...await Promise.allSettled([Promise.resolve().then(()=>late.close())]))}
+        const cleanup=await Promise.allSettled([Promise.resolve().then(()=>browser&&this.releaseBrowser(browser)),Promise.resolve(this.browserCleanup),Promise.resolve(initializing).catch(()=>{/* The initialization caller receives its startup error; shutdown still waits for late-launch cleanup. */})])
+        if(this.browser&&this.browser!==browser){const late=this.browser;cleanup.push(...await Promise.allSettled([this.releaseBrowser(late)]))}
         const errors=cleanup.filter(result=>result.status==='rejected').map(result=>result.reason)
         if(errors.length===1)throw errors[0]
         if(errors.length>1)throw new AggregateError(errors,'渲染浏览器关闭失败')

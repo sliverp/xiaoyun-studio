@@ -1,0 +1,35 @@
+# Isolated deployment for a host that also runs other applications.
+name: xiaoyun-studio
+services:
+  studio:
+    image: ${STUDIO_IMAGE:?Set the built release image}
+    container_name: xiaoyun-studio
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_BIND_ADDRESS:-127.0.0.1}:${STUDIO_PORT:-18080}:18080"
+    environment:
+      STUDIO_SECURE_COOKIE: ${STUDIO_SECURE_COOKIE:-0}
+      ALLOW_PRIVATE_PRESENTATIONS: "0"
+    volumes:
+      - ${STUDIO_DATA_DIRECTORY:?Set the dedicated data directory}:/data
+    cpus: ${STUDIO_CPUS:-2.0}
+    mem_limit: ${STUDIO_MEMORY_LIMIT:-3g}
+    memswap_limit: ${STUDIO_MEMORY_LIMIT:-3g}
+    pids_limit: ${STUDIO_PIDS_LIMIT:-1024}
+    shm_size: 512mb
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

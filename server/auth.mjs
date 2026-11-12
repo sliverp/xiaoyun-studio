@@ -22,7 +22,11 @@ export class Auth {
   if(this.attempts.size>5000){for(const [ip,item] of this.attempts)if(now-item.at>600000)this.attempts.delete(ip);if(this.attempts.size>5000)this.attempts.delete(this.attempts.keys().next().value)}
   if(attempts.count>=10)throw Object.assign(new Error('尝试次数过多，请十分钟后重试'),{status:429})
   if(typeof password!=='string'||password.length>1024||!equal(scryptSync(password,this.record.salt,64).toString('hex'),this.record.hash)){attempts.count++;this.attempts.set(key,attempts);throw Object.assign(new Error('密码不正确'),{status:401})}
-  this.attempts.delete(key);const token=randomBytes(32).toString('base64url');this.sessions.set(token,now+24*3600000);if(this.sessions.size>1000)this.sessions.delete(this.sessions.keys().next().value)
+  this.attempts.delete(key);return this.issueSession()
+ }
+ /** Called only after password verification or a validated one-time workspace handoff. */
+ issueSession(){
+  const now=Date.now(),token=randomBytes(32).toString('base64url');this.sessions.set(token,now+24*3600000);if(this.sessions.size>1000)this.sessions.delete(this.sessions.keys().next().value)
   if(this.sessions.size>1000)for(const [k,expires] of this.sessions)if(expires<now)this.sessions.delete(k)
   return 'studio_session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400'+(this.secure?'; Secure':'')
  }

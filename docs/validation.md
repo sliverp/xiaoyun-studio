@@ -17,15 +17,21 @@ npm run test:media
 
 `test:media` requires Chromium and FFmpeg. Set `CHROMIUM_PATH` and `FFMPEG_PATH` when their executables are not found automatically. On a Linux container that does not support the Chromium sandbox, the image sets `CHROMIUM_NO_SANDBOX=1`; deploy this single-administrator service in an isolated container. The checks use only loopback listeners, including fixed ports 18359, 18360 and 19359 and dynamically allocated ports. Run one media aggregator at a time and leave the fixed ports free.
 
-The current aggregator runs five checks in sequence:
+The current aggregator runs seven checks in sequence:
 
 | Check | Evidence |
 | --- | --- |
 | `engine-smoke` | Real Chromium composite, pause/resume, browser recovery, local RTMP receipt and decoded MP4 audio |
 | `pdf-smoke` | Authenticated PDF access, text extraction and completed page rendering |
-| `app-smoke` | Two authenticated controllers sharing controls, composite avatar, monitoring and recording after logout |
-| `audio-monitor-smoke` | First-click Web Audio playback, audio handshake, explicit local mute and recording without monitoring |
+| `app-smoke` | Two authenticated controllers sharing controls, composite avatar, monitoring and recording after logout, and a durable run created by real FFmpeg progress |
+| `audio-monitor-smoke` | First-click Web Audio playback, audio handshake, explicit local mute, scene-list navigation closing browser audio, and preserved server recording |
+| `audio-continuity-smoke` | Eight-second continuous tone under brief server/browser stalls, PCM clock accuracy, zero silent PCM holes and contiguous browser audio scheduling |
 | `multistream-smoke` | Shared encoder, independent senders, peer outage/recovery and continuous recording |
+| `workspace-smoke` | Six workspace categories, persona preview/apply/customization, cross-page drafts, save/discard, preserved cues, multiple video-channel account forms, separate broadcast history, escaped historical comments, keyboard navigation and mobile layout |
+
+Run `npm run test:ux` for the workspace check alone. It opens an isolated authenticated controller, tests the actual forms against the HTTP app, and retains desktop/mobile screenshots and verification JSON in its reported temporary directory. It does not log into a real platform, call paid AI services or start an output. It also checks that clearing BGM remains a draft across asset refreshes and that layout changes wait for an explicit save.
+
+Run `npm run test:audio` for the continuity check alone. Hardware audio is muted. The test measures PCM and actual Web Audio source scheduling while deliberately adding brief main-thread stalls. In a local macOS comparison, the old interval clock stretched an eight-second tone to 8,376 ms and inserted 17 browser scheduling gaps, up to 30.7 ms. With the monotonic mixer clock and buffered PCM player, the same test measured 7,999 ms, no silent PCM frames inside the tone, and zero scheduling gaps. This is a repeatable timing check, not a measurement of the user's physical audio device.
 
 The media aggregator prints JSON with the temporary directory for each check. It retains MP4 recordings, the RTMP receiver's FLV file, a PDF screenshot, the actual application composite image, and verification JSON there for inspection. The third check starts the actual HTTP application in a separate temporary directory, logs in two independent controllers, verifies shared slide and pause/resume controls, plays an uploaded tone through a fixed cue, checks authenticated audio monitoring, logs one controller out while recording continues, and verifies owned processes exit on shutdown. Set `STUDIO_SMOKE_REPORT` to save the aggregate report to a chosen file. No production streaming destination, live platform session, microphone, OBS instance or model credential is used.
 
@@ -58,3 +64,27 @@ The GitHub Actions workflow defines a Node.js 24 syntax/unit job, a Docker media
 At commit `f7a104c`, the [completed Linux workflow](https://github.com/sliverp/xiaoyun-studio/actions/runs/40534472944) passed source checks, all 136 behavior tests, the ASR image imports, and all five media checks. Its `linux-media-verification` artifact records Linux with Node.js 24.22.1 and an aggregate media duration of 68,690 milliseconds. The local RTMP receiver obtained 140,418 bytes. Browser monitoring measured Web Audio output RMS 0.0837, respected explicit mute, and preserved an MP4 with decoded audio RMS 0.0186. The multi-stream recording contained 429,574 bytes and continued across the simulated peer outage. These are results for that revision; later changes require their own checks. Temporary paths in the JSON refer to the finished CI container; the uploaded artifact preserves the verification JSON, not all temporary media files.
 
 These short checks do not prove 24/48-hour uptime, 1080p performance, a cloud instance's capacity, external RTMP compatibility, model/TTS availability or a real video-channel login. Before a long event, run an extended test on the intended host and verify CPU/memory, capture/encoding rate, audible speech, reconnection behavior, scheduled overlays, slide progression and receipt by the actual streaming platform. Record only with the operator's authorization and keep credentials, audience data and recordings outside the public repository.
+
+
+## Scene and broadcast regression coverage
+
+Reusable scene configuration retains its existing ProjectLibrary IDs and data paths. BroadcastSessions tests cover actual sink progress versus mere preparation, reconnects retaining one run, next output creating a new run, separate platform metrics with missing/zero values, bounded event pagination, persisted history, local recording references, and crash replay without counting downtime. HTTP tests verify authentication, comment deduplication within each run, fresh counters on a later run, filtered/streamed exports, scene switching and copying without copying run history.
+
+The browser workspace check records two isolated external runs, refreshes the controller without creating a third, checks archived comments and metrics, verifies HTML-like comment text remains inert, and checks the sixth workspace category on desktop and mobile. The audio monitor check returns to the scene list while a real recording is active: all browser AudioContexts must close and scheduling must stop, while the same server broadcast and recording continue. Reopening the scene must wait for an explicit audio action.
+
+
+Program scheduling tests exercise optional opening/closing, reordered whole-turn playback, independent engagement, disabled manual/automatic stages, explicit single and multiple lottery rules, simultaneous-trigger deduplication, metric selection and trigger preservation under comment overflow. Store tests verify legacy rule migration and atomic validation. The browser workspace test edits and persists rule selections and stage order, checks disabled activity buttons and the finish-without-goodbye label, and reloads the scene to verify saved choices.
+
+## Provider failover and voice selection
+
+The provider change passes 181 unit tests on macOS and in the Linux release image. Coverage includes a stalled response body, non-cooperative SDK timeouts, invalid model JSON and director protocol, cancellation without fallback, cooldown expiry, credential changes, independent speech credentials, voice-specific cache files, and private test APIs. Browser checks cover ordered model and speech backups, voice selection, credential removal when reusing a deleted slot, persistence, discard, mobile layout, and manual playback of a generated preview.
+
+Real short requests were sent to both configured DeepSeek services and Tencent TextToVoice for the main and backup voices. The resulting WAV files were decoded with FFmpeg and verified to contain non-silent audio. Live service latency is a sample rather than a guarantee. No external stream was started for these checks. Existing media integration checks cover actual local RTMP receipt, recording, PDF rendering, audio monitoring and multiple simultaneous outputs.
+
+The 2.0 voice and audition update passes 185 unit tests. It checks all 18 official basic 2.0 voices, stable-slot credential selection, preview failure without live cooldown changes, cached named audio, administrator and scene guards, and auditioning without saving any draft. Actual short WAV previews for 云小团、云嘉瑜、云大围 were synthesized and decoded successfully.
+
+## Render page recovery
+
+Recovery tests cover a closed page in an otherwise connected browser, a startup `Session closed` error, stale events from retired pages, waiting for profile release, bounded child cleanup, server-side retry after cooldown, and cgroup memory thresholds. The engine integration check closes the actual program tab during local RTMP output and recording, injects one failed replacement startup, and verifies recovery of the current slide with the same encoder. It then separately kills the owned browser and checks reconnection. These checks use isolated local receivers and do not start a third-party broadcast. The current unit suite contains 219 tests.
+
+渐进语音：`node scripts/speech-pipeline-smoke.mjs` 使用本地延迟响应与实际PCM播放验证首块先播、后续合成、两路请求上限、三块解码上限与分块衔接静音。`node scripts/manual-sale-smoke.mjs` 覆盖当前整段结束后插入秒杀、取消、倒计时与移动端。测试不访问付费模型或语音服务。

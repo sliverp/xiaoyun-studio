@@ -26,6 +26,45 @@ test('platform rooms accept official HTTPS links and IDs but reject unrelated an
  assert.throws(()=>validateStreamAddress('rtsp://stream.test/live'),/RTMP/)
  assert.throws(()=>validateStreamAddress('rtmp://stream.test/live|other'))
 })
+test('new connection responses identify the exact saved connection and remote controls require administrator access',async t=>{
+ const f=await fixture(t),response=await f.request('/api/platforms',{method:'POST',body:{platform:'wechat',name:'扫码连接'}}),value=await response.json()
+ assert.equal(response.status,201);assert.equal(value.connection.id,value.platforms.connections[0].id);assert.equal(value.connection.name,'扫码连接')
+ const id=value.connection.id
+ for(const action of ['platform.chat.login','platform.chat.click','platform.chat.scroll','platform.chat.type','platform.chat.key','platform.chat.drag'])assert.equal((await f.request('/api/action',{method:'POST',auth:false,body:{action,id,x:10,y:10,deltaY:100}})).status,401)
+ for(const route of ['upload','stream-info'])assert.equal((await f.request('/api/platforms/'+id+'/browser/'+route,{method:'POST',auth:false})).status,401)
+ assert.equal((await f.request('/api/platforms/'+id+'/frame.jpg',{auth:false})).status,401)
+ assert.equal((await f.request('/api/platforms/'+id+'/local-login',{method:'POST',auth:false})).status,401)
+ assert.equal(f.collectors.length,0,'creating a connection must not itself launch its login browser')
+})
+test('local browser grants authorize only their own import endpoints and never ordinary administration',async t=>{
+ const f=await fixture(t),connection=await f.create('wechat'),response=await f.request('/api/platforms/'+connection.id+'/local-login',{method:'POST'}),grant=await response.json()
+ assert.equal(response.status,200);assert.equal(grant.connectionId,connection.id)
+ const headers={Authorization:'Bearer '+grant.token,'Content-Type':'application/json'}
+ assert.equal((await fetch(f.app.baseUrl+'/api/state',{headers})).status,401)
+ assert.equal((await fetch(f.app.baseUrl+'/api/local-login/pair',{method:'POST',headers})).status,200)
+ assert.equal((await fetch(f.app.baseUrl+'/api/local-login/pair',{method:'POST',headers:{Authorization:'Bearer invalid'}})).status,401)
+ assert.ok(!JSON.stringify(f.app.snapshot()).includes(grant.token))
+})
+test('an explicit workspace handoff restores Studio login without making ordinary sync grants administrator credentials',async t=>{
+ const f=await fixture(t),c=await f.create('wechat')
+ assert.equal((await f.request('/api/platforms/'+c.id+'/local-workspace',{method:'POST',auth:false,body:{browser:'edge'}})).status,401)
+ const r=await f.request('/api/platforms/'+c.id+'/local-workspace',{method:'POST',body:{browser:'edge'}});assert.equal(r.status,200);const grant=await r.json()
+ assert.equal((await fetch(f.app.baseUrl+'/api/local-workspace/claim',{method:'POST',headers:{Authorization:'Bearer '+grant.token}})).status,401)
+ const claimed=await fetch(f.app.baseUrl+'/api/local-workspace/claim',{method:'POST',headers:{Authorization:'Bearer '+grant.workspaceTicket}});assert.equal(claimed.status,200)
+ const cookie=claimed.headers.get('set-cookie').split(';')[0];assert.equal((await fetch(f.app.baseUrl+'/api/state',{headers:{Cookie:cookie}})).status,200)
+ assert.equal((await fetch(f.app.baseUrl+'/api/local-workspace/claim',{method:'POST',headers:{Authorization:'Bearer '+grant.workspaceTicket}})).status,401)
+ assert.ok(!JSON.stringify(f.app.snapshot()).includes(grant.workspaceTicket))
+})
+test('preparation status is scoped and cannot claim verification or carry stream secrets',async t=>{
+ const f=await fixture(t),c=await f.create('wechat'),path='/api/platforms/'+c.id+'/preparation'
+ const body={browser:'edge',localLoggedIn:true,localStreamReady:false,phase:'ready'}
+ assert.equal((await f.request(path,{method:'POST',auth:false,body})).status,401)
+ assert.equal((await f.request(path,{method:'POST',body:{...body,serverVerifiedAt:123}})).status,400)
+ assert.equal((await f.request(path,{method:'POST',body:{...body,streamKey:'fixture-private'}})).status,400)
+ assert.equal((await f.request(path,{method:'POST',body})).status,200)
+ const p=f.app.platforms.status().connections[0].preparation;assert.equal(p.localOnline,true);assert.equal(p.serverVerifiedAt,0)
+ f.app.platforms.preparations.get(c.id).lastSeen=Date.now()-16000;assert.equal(f.app.platforms.status().connections[0].preparation.localOnline,false)
+})
 test('platform credentials stay server-side, survive blank edits and cannot cross another connection',t=>{
  const dataDir=folder(t),store=new Store({root,dataDir,env:{}}),first=store.savePlatform({platform:'bilibili',streamKey:'fixture-private-stream-A',roomUrl:'1'}),second=store.savePlatform({platform:'bilibili',streamKey:'fixture-private-stream-B',roomUrl:'2'})
  assert.notEqual(first.id,second.id);store.savePlatform({streamKey:'',name:'改名'},first.id)
@@ -53,6 +92,19 @@ test('each connection has an isolated login browser and messages retain their pl
  f.collectors[0].options.onComments([{id:'same-comment',nickname:'观众甲',content:'你好'}]);assert.equal(f.app.director.comments[0].connectionId,a.id);assert.equal(f.app.director.comments[0].platform,'bilibili')
  const image=await f.request('/api/platforms/'+a.id+'/frame.jpg');assert.equal(await image.text(),'private-qr-image')
  await f.request('/api/platforms/'+a.id,{method:'DELETE'});assert.equal(f.collectors[0].closed,true);assert.equal(f.collectors[1].closed,undefined)
+})
+test('video-channel connections reject reused push credentials without changing either stored account',t=>{
+ const dataDir=folder(t),store=new Store({root,dataDir,env:{}}),a=store.savePlatform({platform:'wechat',rtmpUrl:'rtmp://fixture.invalid/live/',streamKey:'fixture-account-a'}),b=store.savePlatform({platform:'wechat',rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-account-b'})
+ assert.throws(()=>store.savePlatform({streamKey:'fixture-account-a'},b.id),/已被另一条连接使用/)
+ assert.equal(store.platformSecret(a.id),'fixture-account-a');assert.equal(store.platformSecret(b.id),'fixture-account-b')
+ assert.throws(()=>store.savePlatform({platform:'wechat',rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-account-a'}),/已被另一条连接使用/)
+ assert.equal(store.get().platforms.length,2);assert.doesNotThrow(()=>store.savePlatform({name:'改名'},b.id))
+})
+test('starting video-channel output also starts each selected account collector without starting unselected accounts',async t=>{
+ const f=await fixture(t),a=await f.create('wechat',{rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-a'}),b=await f.create('wechat',{rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-b'}),c=await f.create('wechat',{enabled:false})
+ assert.equal((await f.action('output.start')).status,200);await new Promise(done=>setImmediate(done))
+ assert.deepEqual(f.collectors.map(row=>row.options.connection.id).sort(),[a.id,b.id].sort());assert.equal(f.app.platforms.collectors.has(c.id),false)
+ assert.equal(f.collectors[0].options.expectLive(),true)
 })
 test('multi-output actions resolve only selected private keys and stop one destination independently',async t=>{
  const f=await fixture(t),a=await f.create('bilibili',{rtmpUrl:'rtmp://localhost:19359/live',streamKey:'fixture-destination-A'}),b=await f.create('douyin',{rtmpUrl:'rtmp://localhost:19360/live',streamKey:'fixture-destination-B'})

@@ -3,7 +3,7 @@ export const PLATFORM_CATALOG = [
  {id:'bilibili',name:'哔哩哔哩',description:'B 站直播间弹幕与独立推流',roomPlaceholder:'直播间号或 https://live.bilibili.com/12345',loginDescription:'在服务器浏览器中打开 B 站登录页，使用哔哩哔哩 App 扫码；登录态仅保存在此连接。',chatSupported:true,verification:'requires-live-account'},
  {id:'douyin',name:'抖音',description:'抖音直播间弹幕与独立推流',roomPlaceholder:'直播间号或 https://live.douyin.com/12345',loginDescription:'在服务器浏览器中登录抖音；扫码或安全验证要求以平台页面为准。',chatSupported:true,verification:'requires-live-account'},
  {id:'kuaishou',name:'快手',description:'快手直播间弹幕与独立推流',roomPlaceholder:'主播 ID 或 https://live.kuaishou.com/u/主播ID',loginDescription:'在服务器浏览器中使用快手 App 扫码；平台要求额外验证时按页面完成。',chatSupported:true,verification:'requires-live-account'},
- {id:'wechat',name:'视频号',description:'视频号助手后台弹幕与独立推流',roomPlaceholder:'留空使用视频号助手直播后台',loginDescription:'在服务器浏览器中打开视频号助手，使用微信扫码，再保持直播后台连接。',chatSupported:true,verification:'requires-live-account'},
+ {id:'wechat',name:'视频号',description:'视频号助手后台弹幕与独立推流',roomPlaceholder:'留空使用视频号助手直播后台',loginDescription:'点击「扫码登录视频号」即可在本页打开服务器登录画面，用微信扫码，再按页面提示选择视频号或子用户。',chatSupported:true,verification:'requires-live-account'},
  {id:'custom',name:'自定义 RTMP',description:'其他平台或原有推流配置',roomPlaceholder:'此类型不内置弹幕采集',loginDescription:'自定义推流不需要扫码；弹幕可通过受保护接入口接入。',chatSupported:false,verification:'stream-only'},
 ]
 export const CONNECTION_ID=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/

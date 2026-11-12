@@ -61,6 +61,8 @@ try{
  monitor.on('message',(bytes,isBinary)=>{if(!isBinary)return;pcmBytes+=bytes.length;for(let at=0;at+1<bytes.length;at+=2){pcmPower+=(bytes.readInt16LE(at)/32768)**2;pcmSamples++}})
  await once(monitor,'open');await action('output.start',first);ownedEncoder=app.media.output.child
  const encoding=await waitFor(()=>state(second),s=>s.media.output.active&&s.media.output.encodedFrames>3,'actual recording encoder did not start')
+ assert.ok(encoding.broadcasts.active,'an actual FFmpeg recording must create a durable run')
+ const broadcastId=encoding.broadcasts.active.id
  const started=performance.now();await action('cue.play',first,{id:'integration-cue'})
  await waitFor(()=>state(second),s=>s.director.phase==='playing'&&s.media.audio.voiceRms>0.01,'uploaded cue did not produce real PCM')
  await action('live.pause',second);assert.equal((await state(first)).director.paused,true);await delay(300)
@@ -71,6 +73,7 @@ try{
  const consumedMs=Math.round(performance.now()-started);assert.ok(consumedMs>=2400,'cue completion must wait for actual PCM plus the controller pause')
  await delay(1200);const progressed=await state(second);assert.ok(progressed.media.output.encodedFrames>encoding.media.output.encodedFrames)
  await action('output.stop',second);assert.equal((await state(second)).media.output.active,false)
+ const archived=app.broadcasts.get(broadcastId);assert.equal(archived.status,'ended');assert.equal(archived.mode,'recording');assert.ok(archived.durationSeconds>=3);assert.ok(archived.recordings.length>0)
  const recording=join(app.runtimeDataDir||directory,'recordings',app.media.status().output.recordingFile),decoded=spawnSync(tools.ffmpeg.path,['-hide_banner','-loglevel','error','-i',recording,'-vn','-f','s16le','-ar','16000','-ac','1','pipe:1'],{maxBuffer:16*1024*1024})
  assert.equal(decoded.status,0);let energy=0;for(let at=0;at+1<decoded.stdout.length;at+=2)energy+=(decoded.stdout.readInt16LE(at)/32768)**2
  const recordingRms=Math.sqrt(energy/(decoded.stdout.length/2)),monitorRms=Math.sqrt(pcmPower/pcmSamples)

@@ -131,6 +131,8 @@ test('QR visibility requires a loaded monochrome image rather than login text or
  const environment={document:{body:{innerText:'登录视频号助手'},querySelectorAll:selector=>selector==='img,canvas'?[element]:[],createElement:()=>({getContext:()=>context})},location:{pathname:'/login.html',hostname:'channels.weixin.qq.com'},getComputedStyle:()=>({display:'block',visibility:'visible'})}
  const inspect=()=>runInNewContext('('+readPlatformLoginState.toString()+')("wechat")',environment)
  assert.equal(inspect().qrVisible,false);darkRatio=.30;assert.equal(inspect().qrVisible,true)
+ environment.document.body.innerText='';environment.location={pathname:'/connect/qrconnect',hostname:'open.weixin.qq.com'}
+ assert.equal(inspect().qrVisible,true,'the official embedded QR page can omit visible login text')
  element.complete=false;assert.equal(inspect().qrVisible,false);element.complete=true;blocked=true;assert.equal(inspect().qrVisible,false)
 })
 

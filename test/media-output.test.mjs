@@ -1,6 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {OutputGraph,normalizeDestinations,buildEncoderArgs,buildRemuxArgs,SINK_BUFFER_LIMIT} from '../server/media-output.mjs'
+import {OutputGraph,normalizeDestinations,buildEncoderArgs,buildRemuxArgs,SINK_BUFFER_LIMIT,sinkProgress} from '../server/media-output.mjs'
 const connection=id=>({id,platform:'custom',name:id,rtmpUrl:'rtmps://example.test/live',streamKey:"private'key\\value"})
 const graph=()=>new OutputGraph({ffmpeg:'not-spawned',dataDir:'/tmp',getFrame:()=>null})
 
@@ -44,4 +44,21 @@ test('retries stop after three consecutive failures until explicitly requested a
  const output=graph(),sink=output.createSink(normalizeDestinations({destinations:[connection('one')]})[0]);output.sinks.set('one',sink);output.wanted=true;sink.failures=3
  assert.equal(output.queueSinkRetry(sink),false);assert.equal(sink.state,'error');assert.equal(sink.timer,null)
  output.sinks.clear();output.wanted=false
+})
+test('brief writes followed by EOF exhaust retries instead of resetting the failure count forever',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const output=graph(),sink=output.createSink(normalizeDestinations({destinations:[connection('one')]})[0]);output.sinks.set('one',sink);output.wanted=true;let starts=0;output.startSink=()=>{starts++}
+ for(let i=0;i<3;i++){
+  sink.attemptStartedAt=0;sinkProgress(sink,'frame','43',4000);sinkProgress(sink,'total_size','480000',4000);sinkProgress(sink,'out_time_us','3800000',4000)
+  assert.equal(sink.failures,i,'less than ten seconds of sending must preserve the retry budget')
+  assert.equal(output.queueSinkRetry(sink),true);t.mock.timers.tick(1000*2**i)
+ }
+ assert.equal(starts,3);assert.equal(output.queueSinkRetry(sink),false);assert.equal(sink.state,'error')
+ sink.attemptStartedAt=0;sinkProgress(sink,'out_time_us','11000000',11000);assert.equal(sink.failures,0,'sustained successful output can reset the retry budget')
+ output.wanted=false;await output.stop()
+})
+test('frame counters without any sent media do not announce a successful stream',()=>{
+ const sink=graph().createSink(normalizeDestinations({destinations:[connection('one')]})[0]);sink.attemptStartedAt=0
+ sinkProgress(sink,'frame','10',100);assert.equal(sink.state,'starting')
+ sinkProgress(sink,'total_size','1000',100);assert.equal(sink.state,'starting')
+ sinkProgress(sink,'out_time_us','500000',100);assert.equal(sink.state,'streaming')
 })

@@ -100,6 +100,19 @@ try{
  await waitFor(state,value=>value.media.audio.voiceRms>.01,'the second fixed cue did not produce real speech PCM')
  await page.click('#monitor-toggle')
  await waitFor(readProbe,value=>value.contexts.length>=2&&value.contexts.at(-1).state==='running'&&value.handshakes>=2,'an explicit monitor click did not reopen the local audio')
+ const currentBroadcast=app.broadcasts.active.id
+ await page.click('#open-projects')
+ await page.waitForSelector('#projects-home',{visible:true})
+ await waitFor(readProbe,value=>value.contexts.every(context=>context.state==='closed'),'returning to the scene list left browser sound playing')
+ assert.equal(app.broadcasts.active.id,currentBroadcast,'returning home must preserve the running broadcast')
+ assert.equal((await state()).media.output.recording,true,'returning home must not stop the server recording')
+ const pausedScheduling=(await readProbe()).scheduledChunks
+ await delay(200);assert.equal((await readProbe()).scheduledChunks,pausedScheduling,'background audio must not reconnect on the scene list')
+ await page.click('#open-current-project')
+ await page.waitForSelector('#panel-director',{visible:true})
+ assert.equal(await page.$eval('#monitor-toggle',element=>element.getAttribute('aria-pressed')),'false','opening the scene must wait for an explicit sound or playback action')
+ await page.click('#monitor-toggle')
+ await waitFor(readProbe,value=>value.contexts.at(-1).state==='running'&&value.handshakes>=3,'monitoring did not reopen after returning to the scene')
  await closeMonitor();await delay(400)
  const recordingContinued=await waitFor(state,value=>value.media.audio.voiceRms>.001,'monitor shutdown stopped the shared voice bus',3000)
  assert.ok(recordingContinued.media.output.recording&&recordingContinued.media.output.encodedFrames>recordingStarted.media.output.encodedFrames,'monitor shutdown stopped or stalled the shared recording')
@@ -111,7 +124,7 @@ try{
  const recordingRms=Math.sqrt(recordedPower/(decoded.stdout.length/2));assert.ok(recordingRms>.001,'the actual recorded voice track must remain nonzero')
  await page.screenshot({path:join(directory,'controller.png'),fullPage:true})
  await cleanup()
- const result={passed:true,artifactDirectory:directory,fixedCue:'audience-interaction',paidApiUsed:false,externalStreamingDestinationUsed:false,hardwareAudioMuted:true,trustedClickAutomaticallyOpenedMonitor:true,firstCueWaitedForListener:true,explicitLocalMuteRespected:true,monitorWorkedWithoutOutput:true,closingMonitorPreservedSpeech:true,closingMonitorPreservedRecording:true,recordedBytes:statSync(recording).size,recordingRms,webAudio:probe,pageErrors}
+ const result={passed:true,artifactDirectory:directory,fixedCue:'audience-interaction',paidApiUsed:false,externalStreamingDestinationUsed:false,hardwareAudioMuted:true,trustedClickAutomaticallyOpenedMonitor:true,firstCueWaitedForListener:true,explicitLocalMuteRespected:true,monitorWorkedWithoutOutput:true,returningToScenesClosedLocalAudio:true,returningToScenesPreservedBroadcast:true,closingMonitorPreservedSpeech:true,closingMonitorPreservedRecording:true,recordedBytes:statSync(recording).size,recordingRms,webAudio:probe,pageErrors}
  writeFileSync(join(directory,'verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2))
 }catch(error){
  let diagnostic=null

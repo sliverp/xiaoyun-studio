@@ -12,8 +12,12 @@ import { Events } from './events.mjs'
 import { MediaEngine, detectTools } from './media.mjs'
 import { Providers } from './providers.mjs'
 import { LiveDirector } from './director.mjs'
+import {promptCatalog} from './director-prompts.mjs'
 import { PlatformManager } from './platform-manager.mjs'
 import { ChannelsCollector } from './channels.mjs'
+import { BroadcastSessions } from './broadcasts.mjs'
+import {LocalLoginGrants} from './local-login.mjs'
+import {LocalWorkspaceTickets} from './local-workspace.mjs'
 
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..')
 const fail=(status,message)=>Object.assign(new Error(message),{status})
@@ -30,23 +34,31 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
  const projectError=(code,message)=>Object.assign(fail(409,message),{code})
  const visibleConfig=()=>{const c=store.get();delete c.tts.demoAsset;return c}
  const setup=()=>({tools:detectTools(),providers:providers?.status?.()||{},firstRun:auth.firstRun,headless:true,obsRequired:false,softwareVersion:'0.1.0',commentIngestConfigured:Boolean(store.secret('commentIngestKey'))})
- const snapshot=()=>({projects:projectState(),config:visibleConfig(),director:director?.status?.()||{},media:media?.status?.()||{},channels:channels?.status?.()||{},platforms:platforms?.status?.()||{catalog:[],connections:[],limit:8},secrets:store.presence(),setup:setup()})
+ const snapshot=()=>({projects:projectState(),broadcasts:current?.broadcasts.state()||{active:null,total:0},config:visibleConfig(),director:director?.status?.()||{},media:media?.status?.()||{},channels:channels?.status?.()||{},platforms:platforms?.status?.()||{catalog:[],connections:[],limit:8},secrets:store.presence(),setup:setup()})
  events.getSnapshot=snapshot
+ const localLoginGrants=new LocalLoginGrants()
+ const workspaceTickets=new LocalWorkspaceTickets()
  const trustedRender=req=>{const value=req.headers['x-render-token']||new URL(req.url,'http://studio.local').searchParams.get('renderToken');return typeof value==='string'&&current&&equalToken(value,current.renderToken)}
  const internalAccess=req=>trustedRender(req)||auth.isAuthenticated(req)
  const ensurePreview=()=>current.ensurePreview()
  const programState=()=>{const c=store.get(),m=media.status(),d=director.programState();return {...d,scene:c.scene,slideRevision:m.slide?.revision||0,slide:{title:m.slide?.title||'',pageNumber:m.slide?.pageNumber||0,pageCount:m.slide?.pageCount||0,revision:m.slide?.revision||0},audio:current.meter,serverAt:Date.now()}}
  const createActions=runtime=>{
  const {store,media,director,channels,platforms,assets}=runtime,ensurePreview=runtime.ensurePreview,applyBgm=runtime.applyBgm,check=runtime.assertActive
- const navigate=async direction=>{await ensurePreview();check();if(director.status().running&&!director.status().paused)throw fail(409,'请先暂停 AI 讲解，再手动切页');if(direction==='next')await media.nextSlide();else if(direction==='prev')await media.previousSlide();else await media.firstSlide();check();await director.refreshPresentation?.();return snapshot()}
+ const navigate=async direction=>{await ensurePreview();check();if(director.navigatePresentation)await director.navigatePresentation(direction);else{if(direction==='next')await media.nextSlide();else if(direction==='prev')await media.previousSlide();else await media.firstSlide();await director.refreshPresentation?.();}check();return snapshot()}
  return {
   'platform.chat.connect':async value=>{await platforms.connect(value.id);return snapshot()},
   'platform.chat.login':async value=>{await platforms.connect(value.id,{login:true});return snapshot()},
   'platform.chat.disconnect':async value=>{await platforms.disconnect(value.id);return snapshot()},
   'platform.chat.click':async value=>{await platforms.click(value.id,{x:value.x,y:value.y});return snapshot()},
-  'output.platform.start':async value=>{await platforms.start(value.id);return snapshot()},
-  'output.platform.stop':async value=>{await platforms.stop(value.id);return snapshot()},
-  'output.platform.retry':async value=>{await platforms.retry(value.id);return snapshot()},
+  'platform.chat.scroll':async value=>{await platforms.scroll(value.id,{x:value.x,y:value.y,deltaY:value.deltaY});return snapshot()},
+  'platform.chat.type':async value=>{await platforms.type(value.id,{text:value.text,replace:value.replace});return snapshot()},
+  'platform.chat.drag':async value=>{await platforms.drag(value.id,{fromX:value.fromX,fromY:value.fromY,toX:value.toX,toY:value.toY});return snapshot()},
+  'platform.chat.key':async value=>{await platforms.key(value.id,{key:value.key});return snapshot()},
+  'output.platform.start':async value=>{await platforms.start(value.id);check();runtime.broadcasts.observeOutput(media.status().output);return snapshot()},
+  'output.platform.stop':async value=>{await platforms.stop(value.id);runtime.broadcasts.observeOutput(media.status().output);return snapshot()},
+  'output.platform.retry':async value=>{await platforms.retry(value.id);check();runtime.broadcasts.observeOutput(media.status().output);return snapshot()},
+  'broadcast.external.start':()=>{check();runtime.broadcasts.start('external');return snapshot()},
+  'broadcast.end':async()=>{runtime.broadcasts.ending=true;try{platforms.cancelOutputStarts();await media.stopOutput();check();director.stop('本场直播已结束');runtime.broadcasts.finish('user-ended');return snapshot()}finally{runtime.broadcasts.ending=false}},
   'channels.connect':async()=>{await channels.connect();return snapshot()},
   'channels.disconnect':async()=>{await channels.disconnect();return snapshot()},
   'channels.click':async value=>{await channels.click({x:value.x,y:value.y});return snapshot()},
@@ -62,39 +74,42 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
   'lottery.queue':()=>{director.queueLottery();return snapshot()},
   'presentation.open':async value=>{if(director.status().running&&!director.status().paused)throw fail(409,'请先暂停 AI 讲解，再更换演示稿');const url=value.url||store.get().presentation.url;validatePresentation(url);await media.openPresentation(url);check();store.update({presentation:{url}});await director.refreshPresentation?.();return snapshot()},
   'presentation.next':()=>navigate('next'),'presentation.prev':()=>navigate('prev'),'presentation.first':()=>navigate('first'),
-  'output.start':async()=>{const c=store.get();await media.startOutput({...c.output,videoBitrate:c.output.videoBitrate+'k',audioBitrate:c.output.audioBitrate+'k',destinations:platforms.destinations()},{prepare:ensurePreview});return snapshot()},
-  'output.stop':async()=>{platforms.cancelOutputStarts();await media.stopOutput();return snapshot()},
+  'output.start':async()=>{const c=store.get(),destinations=platforms.destinations();await media.startOutput({...c.output,videoBitrate:c.output.videoBitrate+'k',audioBitrate:c.output.audioBitrate+'k',destinations},{prepare:ensurePreview});check();platforms.followOutputChats(destinations.map(row=>row.id));runtime.broadcasts.observeOutput(media.status().output);return snapshot()},
+  'output.stop':async()=>{platforms.cancelOutputStarts();await media.stopOutput();runtime.broadcasts.observeOutput(media.status().output);return snapshot()},
   'bgm.set':value=>{if(value.asset!==undefined)store.update({bgm:{asset:value.asset}});applyBgm();return snapshot()},
  }}
  const relayAudio=buffer=>{for(const socket of monitors){if(socket.readyState!==WebSocket.OPEN)continue;if(socket.bufferedAmount>256*1024){socket.close(1013,'监听延迟过高，请重新连接');continue}socket.send(buffer,{binary:true},()=>{})}}
  async function createRuntime(id){
   const runtime={id,dataDir:projects.directory(id),store:projects.openStore(id),renderToken:randomBytes(32).toString('hex'),meter:{rms:0,voiceRms:0,bgmRms:0},pending:new Set(),closed:false,previewPromise:null}
   ownedRuntimes.add(runtime)
-  runtime.close=async()=>{
+  runtime.close=async(reason='service-stopped')=>{
    if(runtime.cleanupComplete)return
    if(runtime.closePromise)return runtime.closePromise
    runtime.closed=true
    const operation=(async()=>{
     const errors=[]
+    try{runtime.broadcasts?.close(reason)}catch(error){errors.push(error)}
     try{runtime.platforms?.cancelOutputStarts();await runtime.media?.stopOutput?.()}catch(error){errors.push(error)}
     const results=await Promise.allSettled([()=>runtime.director?.close?.(),()=>runtime.platforms?.close(),()=>runtime.channels?.close(),()=>runtime.media?.close(),()=>runtime.providers?.close?.()].map(close=>Promise.resolve().then(close)))
     runtime.cleanupComplete=results.every(result=>result.status==='fulfilled')
     for(const result of results)if(result.status==='rejected')errors.push(result.reason)
     if(runtime.cleanupComplete)ownedRuntimes.delete(runtime)
-    if(errors.length)throw new AggregateError(errors,'当前场次停止时遇到问题，请检查后重试')
+    if(errors.length)throw new AggregateError(errors,'当前场景停止时遇到问题，请检查后重试')
    })()
    runtime.closePromise=operation
    try{return await operation}finally{if(runtime.closePromise===operation)runtime.closePromise=null}
   }
   try{
-  runtime.assertActive=()=>{if(closing)throw fail(503,'服务正在关闭');if(switching)throw projectError('PROJECT_SWITCHING','正在切换直播场次，请稍候');if(current!==runtime||runtime.closed)throw projectError('PROJECT_CHANGED','直播场次已在其他页面切换，请刷新当前场次后再操作')}
+  runtime.assertActive=()=>{if(closing)throw fail(503,'服务正在关闭');if(switching)throw projectError('PROJECT_SWITCHING','正在切换直播场景，请稍候');if(current!==runtime||runtime.closed)throw projectError('PROJECT_CHANGED','直播场景已在其他页面切换，请刷新当前场景后再操作')}
   const active=()=>current===runtime&&!runtime.closed&&!closing&&!switching
   const runtimeEvents={publish:(type,payload)=>{if(active())events.publish(type,payload)}}
+  runtime.broadcasts=new BroadcastSessions({dataDir:runtime.dataDir,sceneId:id,getScene:()=>{const config=runtime.store.get();return {name:projects.list().find(item=>item.id===id)?.name||'直播场景',configuration:{presenter:config.identity.name,personaId:config.identity.personaId,sceneTitle:config.scene.title,cueCount:config.cues.length}}},onStart:()=>runtime.director?.beginBroadcast?.(),onChange:payload=>runtimeEvents.publish('broadcasts',payload)})
   runtime.assets=new Assets({root,dataDir,runtimeDataDir:runtime.dataDir})
-  const options={dataDir:runtime.dataDir,baseUrl,renderToken:runtime.renderToken,getSettings:()=>runtime.store.get(),onAudio:buffer=>{if(active())relayAudio(buffer)},onStatus:payload=>runtimeEvents.publish('media',payload),onMeter:payload=>{if(active()){runtime.meter=payload;runtime.director?.audioProgress(payload);events.publish('meter',payload)}}}
+  const options={dataDir:runtime.dataDir,baseUrl,renderToken:runtime.renderToken,getSettings:()=>runtime.store.get(),onAudio:buffer=>{if(active())relayAudio(buffer)},onStatus:payload=>{if(active()){runtime.broadcasts.observeOutput(payload.output);runtimeEvents.publish('media',payload)}},onMeter:payload=>{if(active()){runtime.meter=payload;runtime.director?.audioProgress(payload);events.publish('meter',payload)}}}
   runtime.media=mediaFactory?.(options)||new MediaEngine(options)
   runtime.providers=providerFactory?.({store:runtime.store,dataDir:runtime.dataDir})||new Providers({store:runtime.store,dataDir:runtime.dataDir})
-  runtime.director=directorFactory?.({store:runtime.store,media:runtime.media,providers:runtime.providers,events:runtimeEvents,dataDir:runtime.dataDir})||new LiveDirector({store:runtime.store,media:runtime.media,providers:runtime.providers,events:runtimeEvents,dataDir:runtime.dataDir})
+  const directorOptions={store:runtime.store,media:runtime.media,providers:runtime.providers,events:runtimeEvents,dataDir:runtime.dataDir,onRecord:(type,payload)=>{if(active())runtime.broadcasts.capture(type,payload)}}
+  runtime.director=directorFactory?.(directorOptions)||new LiveDirector(directorOptions)
   runtime.applyBgm=()=>{const c=runtime.store.get();try{runtime.media.setBgm(c.bgm.asset?runtime.assets.resolveUrl(c.bgm.asset):null,{volume:c.bgm.volume,ducking:c.bgm.ducking})}catch(error){runtimeEvents.publish('error',{error:runtime.store.redact(error.message)})}}
   runtime.ensurePreview=()=>{runtime.assertActive();if(runtime.previewPromise&&!runtime.media.status().ready)runtime.previewPromise=null;if(!runtime.previewPromise)runtime.previewPromise=runtime.media.initialize().then(async()=>{runtime.assertActive();if(!runtime.media.status().slide?.pageNumber&&runtime.store.get().presentation.url)await runtime.media.openPresentation(runtime.store.get().presentation.url);runtime.assertActive();runtime.applyBgm()}).catch(error=>{runtimeEvents.publish('error',{error:runtime.store.redact(error.message)});runtime.previewPromise=null;throw error});return runtime.previewPromise}
   const channelOptions={dataDir:runtime.dataDir,onComments:items=>{if(active())runtime.director.addComments(items)},onMetrics:value=>{if(active())runtime.director.ingestMetrics(value)},onStatus:value=>runtimeEvents.publish('channels',value)}
@@ -102,20 +117,20 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
   runtime.platforms=new PlatformManager({store:runtime.store,media:runtime.media,director:runtime.director,events:runtimeEvents,dataDir:runtime.dataDir,collectorFactory:platformCollectorFactory,prepareOutput:runtime.ensurePreview})
   runtime.actions=createActions(runtime)
   return runtime
-  }catch(error){try{await runtime.close()}catch(cleanup){throw new AggregateError([error,cleanup],'场次初始化失败，清理时遇到问题')}throw error}
+  }catch(error){try{await runtime.close()}catch(cleanup){throw new AggregateError([error,cleanup],'场景初始化失败，清理时遇到问题')}throw error}
  }
  function installRuntime(runtime){current=runtime;({store,assets,media,director,providers,channels,platforms,actions}=runtime)}
  async function activateProject(id,stopCurrent){
-  if(switching)throw projectError('PROJECT_SWITCHING','正在切换直播场次，请稍候')
+  if(switching)throw projectError('PROJECT_SWITCHING','正在切换直播场景，请稍候')
   projects.openStore(id)
   if(id===current.id&&!current.closed)return snapshot()
   const previous=current,output=previous.media.status().output||{},speech=previous.director.status()
-  if((speech.running||output.running||output.active||previous.pending.size)&&!stopCurrent)throw projectError('PROJECT_BUSY','当前场次正在播报、推流、录制或处理操作，请确认停止后切换')
+  if((speech.running||output.running||output.active||previous.broadcasts.active||previous.pending.size)&&!stopCurrent)throw projectError('PROJECT_BUSY','当前场景正在播报、推流、录制或记录场次，请确认结束后切换')
   switching=true;events.publish('state',snapshot())
   let next
   try{
-   for(const socket of monitors)socket.close(1012,'直播场次已切换')
-   await previous.close()
+   for(const socket of monitors)socket.close(1012,'直播场景已切换')
+   await previous.close('scene-switched')
    if(closing)throw fail(503,'服务正在关闭')
    next=await createRuntime(id)
    if(closing)throw fail(503,'服务正在关闭')
@@ -141,7 +156,20 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
    requestRuntime=current
    const {store,assets,media,director,channels,platforms,actions,ensurePreview,applyBgm}=requestRuntime
    const readBody=async()=>{const value=await jsonBody(req);requestRuntime.assertActive();return value}
-   const publicFiles={'/':'index.html','/index.html':'index.html','/app.mjs':'app.mjs','/style.css':'style.css','/favicon.svg':'favicon.svg'}
+   if(path==='/api/local-workspace/claim'&&req.method==='POST'){
+    const ticket=String(req.headers.authorization||'').replace(/^Bearer /,''),grant=workspaceTickets.consume(ticket,requestRuntime.id),connection=platforms.connection(grant.connectionId)
+    res.setHeader('Set-Cookie',auth.issueSession());return json(res,{ok:true,projectId:grant.projectId,connectionId:connection.id,projectName:projects.list().find(item=>item.id===grant.projectId)?.name||'直播场景',name:connection.name,browser:grant.browser})
+   }
+   if(path==='/api/local-login/pair'&&req.method==='POST'){
+    const token=String(req.headers.authorization||'').replace(/^Bearer /,''),grant=localLoginGrants.get(token,requestRuntime.id);platforms.connection(grant.connectionId)
+    return json(res,{ok:true,projectId:grant.projectId,connectionId:grant.connectionId,name:grant.name,expiresAt:grant.expiresAt,platform:'wechat'})
+   }
+   if(path==='/api/local-login/sync'&&req.method==='POST'){
+    const token=String(req.headers.authorization||'').replace(/^Bearer /,''),grant=localLoginGrants.get(token,requestRuntime.id),data=await readBody();localLoginGrants.consume(token,requestRuntime.id)
+    pendingToken={};requestRuntime.pending.add(pendingToken);const result=await platforms.importSession(grant.connectionId,data.session||data,data.session?data.streamInfo:undefined);requestRuntime.assertActive()
+    return json(res,{ok:true,connectionId:grant.connectionId,...result})
+   }
+   const publicFiles={'/':'index.html','/index.html':'index.html','/app.mjs':'app.mjs','/platform-preparation.mjs':'platform-preparation.mjs','/personas.mjs':'personas.mjs','/program-config.mjs':'program-config.mjs','/provider-config.mjs':'provider-config.mjs','/providers-ui.mjs':'providers-ui.mjs','/pcm-monitor.mjs':'pcm-monitor.mjs','/broadcasts-ui.mjs':'broadcasts-ui.mjs','/style.css':'style.css','/workspace.css':'workspace.css','/favicon.svg':'favicon.svg'}
    if(publicFiles[path]&&['GET','HEAD'].includes(req.method)){res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");return sendFile(req,res,join(root,'public',publicFiles[path]),{noCache:true})}
    if(path==='/vendor/pdfjs/pdf.mjs'||path==='/vendor/pdfjs/pdf.worker.mjs')return sendFile(req,res,join(root,'node_modules/pdfjs-dist/build',path.endsWith('worker.mjs')?'pdf.worker.mjs':'pdf.mjs'))
    if(path==='/pdf-viewer'||path==='/pdf-viewer.mjs'){if(!internalAccess(req))throw fail(401,'请先登录');return sendFile(req,res,join(root,'public',path==='/pdf-viewer'?'pdf-viewer.html':'pdf-viewer.mjs'),{noCache:true})}
@@ -168,28 +196,79 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
    if(!['GET','HEAD','OPTIONS'].includes(req.method)){
     requestRuntime.assertActive()
     const expected=req.headers['x-studio-project']
-    if(expected!==undefined&&(typeof expected!=='string'||expected!==requestRuntime.id))throw projectError('PROJECT_CHANGED','直播场次已在其他页面切换，请刷新当前场次后再操作')
+    if(expected!==undefined&&(typeof expected!=='string'||expected!==requestRuntime.id))throw projectError('PROJECT_CHANGED','直播场景已在其他页面切换，请刷新当前场景后再操作')
     if(!/^\/api\/projects\/[A-Za-z0-9_-]+\/activate$/.test(path)){pendingToken={};requestRuntime.pending.add(pendingToken)}
    }
    if(path==='/api/logout'&&req.method==='POST'){res.setHeader('Set-Cookie',auth.logout(req));return json(res,{ok:true})}
    if(path==='/api/state'&&req.method==='GET')return json(res,snapshot())
+   const pageOptions=()=>{
+    const offset=Number(url.searchParams.get('offset')||0),limit=Number(url.searchParams.get('limit')||20),type=url.searchParams.get('type')||'all'
+    if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>200||!['all','comment','metrics','activity'].includes(type))throw fail(400,'场次分页参数无效')
+    return {offset,limit,type}
+   }
+   if(path==='/api/broadcasts'&&req.method==='GET')return json(res,requestRuntime.broadcasts.list(pageOptions()))
+   const broadcastPath=/^\/api\/broadcasts\/([a-f0-9-]{36})(\/export)?$/.exec(path)
+   if(broadcastPath&&req.method==='GET'){
+    const id=broadcastPath[1],sessions=requestRuntime.broadcasts
+    if(!broadcastPath[2])return json(res,await sessions.detail(id,pageOptions()))
+    const session=sessions.get(id)
+    res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Content-Disposition':'attachment; filename="broadcast-'+id+'.json"','Cache-Control':'no-store'})
+    res.write('{"session":'+JSON.stringify(session)+',"events":[');let first=true
+    for await(const event of sessions.events(id)){
+     if(event.sequence>session.eventCount||res.destroyed)break
+     if(!res.write((first?'':',')+JSON.stringify(event)))await new Promise(done=>{const ready=()=>{res.off('drain',ready);res.off('close',ready);done()};res.once('drain',ready);res.once('close',ready)})
+     first=false
+    }
+    return res.end(']}')
+   }
    if(path==='/api/projects'&&req.method==='GET')return json(res,projectState())
-   const projectValue=async allowed=>{const value=await readBody();if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))throw fail(400,'场次操作参数无效');return value}
+   const projectValue=async allowed=>{const value=await readBody();if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))throw fail(400,'场景操作参数无效');return value}
    if(path==='/api/projects'&&req.method==='POST'){const project=projects.create(await projectValue(['name','copyCurrent']));events.publish('state',snapshot());return json(res,{ok:true,project,projects:projectState()},201)}
    const projectPath=/^\/api\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})(\/activate)?$/.exec(path)
    if(projectPath){
     const id=projectPath[1]
-    if(projectPath[2]&&req.method==='POST'){const value=await projectValue(['stopCurrent']);if(value.stopCurrent!==undefined&&typeof value.stopCurrent!=='boolean')throw fail(400,'停止当前场次选项无效');return json(res,{ok:true,...await activateProject(id,value.stopCurrent===true)})}
+    if(projectPath[2]&&req.method==='POST'){const value=await projectValue(['stopCurrent']);if(value.stopCurrent!==undefined&&typeof value.stopCurrent!=='boolean')throw fail(400,'停止当前场景选项无效');return json(res,{ok:true,...await activateProject(id,value.stopCurrent===true)})}
     if(!projectPath[2]&&req.method==='PUT'){const value=await projectValue(['name']),project=projects.rename(id,value.name);events.publish('state',snapshot());return json(res,{ok:true,project,projects:projectState()})}
     if(!projectPath[2]&&req.method==='DELETE'){projects.remove(id);events.publish('state',snapshot());return json(res,{ok:true,projects:projectState()})}
    }
    if(path==='/api/platforms'&&req.method==='GET')return json(res,platforms.status())
-   if(path==='/api/platforms'&&req.method==='POST'){platforms.create(await readBody());return json(res,{ok:true,...snapshot()},201)}
+   if(path==='/api/platforms'&&req.method==='POST'){const connection=platforms.create(await readBody());return json(res,{ok:true,connection,...snapshot()},201)}
+   const workspacePath=/^\/api\/platforms\/([\w-]+)\/(local-workspace|preparation)$/.exec(path)
+   if(workspacePath&&req.method==='POST'){
+    const c=platforms.connection(workspacePath[1]);if(c.platform!=='wechat')throw fail(400,'本机直播工作区目前支持视频号')
+    const data=await readBody()
+    if(workspacePath[2]==='preparation')return json(res,{ok:true,preparation:platforms.updatePreparation(c.id,data)})
+    if(Object.keys(data).some(key=>key!=='browser')||!['edge','chrome'].includes(data.browser))throw fail(400,'请选择 Edge 或 Chrome')
+    const grant=localLoginGrants.create({projectId:requestRuntime.id,connectionId:c.id,name:c.name}),ticket=workspaceTickets.create({projectId:requestRuntime.id,connectionId:c.id,browser:data.browser})
+    return json(res,{ok:true,...grant,...ticket,browser:data.browser})
+   }
+   const localLoginPath=/^\/api\/platforms\/([\w-]+)\/local-login$/.exec(path)
+   if(localLoginPath&&req.method==='POST'){const c=platforms.connection(localLoginPath[1]);if(c.platform!=='wechat')throw fail(400,'本机登录同步目前支持视频号');return json(res,{ok:true,...localLoginGrants.create({projectId:requestRuntime.id,connectionId:c.id,name:c.name})})}
+   const browserPath=/^\/api\/platforms\/([\w-]+)\/browser\/(upload|stream-info)$/.exec(path)
+   if(browserPath&&req.method==='POST'){
+    const [,id,operation]=browserPath
+    if(operation==='stream-info'){const value=await platforms.streamInfo(id);requestRuntime.assertActive();return json(res,value)}
+    const bytes=await body(req,10*1024*1024);requestRuntime.assertActive();await platforms.upload(id,bytes);requestRuntime.assertActive();return json(res,{ok:true,...snapshot()})
+   }
    const platformPath=/^\/api\/platforms\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})(\/frame\.jpg)?$/.exec(path)
    if(platformPath){const id=platformPath[1];if(platformPath[2]&&req.method==='GET'){const frame=platforms.frame(id);if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}if(!platformPath[2]&&req.method==='PUT'){await platforms.update(id,await readBody());requestRuntime.assertActive();return json(res,{ok:true,...snapshot()})}if(!platformPath[2]&&req.method==='DELETE'){await platforms.remove(id);requestRuntime.assertActive();return json(res,{ok:true,...snapshot()})}}
    if(path==='/api/channels/status'&&req.method==='GET')return json(res,channels.status())
    if(path==='/api/channels/frame.jpg'&&req.method==='GET'){const frame=channels.getFrame();if(!frame){res.writeHead(204,{'Cache-Control':'no-store'});return res.end()}res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(frame)}
+   if(path==='/api/prompts'&&req.method==='GET')return json(res,promptCatalog(store.get()))
    if(path==='/api/setup'&&req.method==='GET')return json(res,setup())
+   if(path==='/api/providers/preview'&&req.method==='POST'){
+    const data=await readBody();if(!data||typeof data!=='object'||Array.isArray(data)||Object.keys(data).some(key=>!['slot','voice','text','speed','provider'].includes(key))||!Number.isInteger(data.slot)||data.slot<0||data.slot>4)throw fail(400,'试听参数无效')
+    const result=await requestRuntime.providers.previewSpeech(data);requestRuntime.assertActive()
+    result.audioUrl='/assets/audio/'+result.path.split(/[\\/]/).at(-1);delete result.path
+    return json(res,{ok:true,...result})
+   }
+   if(path==='/api/providers/test'&&req.method==='POST'){
+    const data=await readBody();if(!data||!['model','speech'].includes(data.kind)||!Number.isInteger(data.route)||data.route<0||data.route>4)throw fail(400,'测试通道参数无效')
+    const result=await requestRuntime.providers.test(data.kind,data.route);requestRuntime.assertActive()
+    if(result.path){result.audioUrl='/assets/audio/'+result.path.split(/[\\/]/).at(-1);delete result.path}
+    return json(res,{ok:true,...result,providers:requestRuntime.providers.status()})
+   }
+
    if(path==='/api/events'&&req.method==='GET'){
     if(clients.size>=32)throw fail(429,'监控连接过多')
     res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive','X-Accel-Buffering':'no'});res.write('event: message\ndata: '+JSON.stringify({type:'snapshot',payload:snapshot()})+'\n\n')
@@ -226,5 +305,5 @@ export async function createStudio({root=ROOT,dataDir=process.env.STUDIO_DATA_DI
  const address=server.address(),baseUrl='http://127.0.0.1:'+address.port
  try{installRuntime(await createRuntime(projects.activeId))}catch(error){await Promise.allSettled([...ownedRuntimes].map(runtime=>runtime.close()));monitorServer.close();await new Promise(done=>server.close(done));throw error}
  async function close(){if(closing)return;closing=true;for(const client of [...clients]){client.studioCleanup?.();client.end()}for(const socket of monitors)socket.terminate();monitorServer.close();const results=await Promise.allSettled([...ownedRuntimes].map(runtime=>runtime.close()));await new Promise(done=>server.close(done));const errors=results.filter(result=>result.status==='rejected');if(errors.length)throw new AggregateError(errors.map(result=>result.reason),'直播运行资源未能完整停止')}
- return {server,baseUrl,auth,events,projects,snapshot,ensurePreview,close,dataDir,get runtimeDataDir(){return current.dataDir},get store(){return store},get assets(){return assets},get media(){return media},get director(){return director},get providers(){return providers},get channels(){return channels},get platforms(){return platforms}}
+ return {server,baseUrl,auth,events,projects,snapshot,ensurePreview,close,dataDir,get broadcasts(){return current.broadcasts},get runtimeDataDir(){return current.dataDir},get store(){return store},get assets(){return assets},get media(){return media},get director(){return director},get providers(){return providers},get channels(){return channels},get platforms(){return platforms}}
 }

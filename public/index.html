@@ -1,66 +1,1175 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>小云 Studio · 云端 AI 导播台</title><link rel="stylesheet" href="/style.css"></head>
-<body>
-<section id="login-screen" class="login-screen" hidden>
-  <div class="login-card"><div class="brand-mark">云</div><p class="eyebrow">XIAOYUN STUDIO</p><h1>把直播间，交给云端。</h1><p>一个导播台，完成讲解、互动、画面合成与推流。</p><form id="login-form"><label>管理员密码<input id="login-password" type="password" autocomplete="current-password" required autofocus placeholder="部署时设置的管理员密码"></label><button class="primary" type="submit">进入导播台 <span>→</span></button></form><p id="login-error" class="error" role="alert"></p><p class="muted small">首次运行的登录信息会显示在服务启动日志中。</p></div>
-</section>
-<div id="studio" hidden>
-<header class="topbar"><div class="brand"><span class="brand-mark small-mark">云</span><div><h1>小云 <b>Studio</b></h1><span>云端 AI 导播台</span></div><span id="demo-badge" class="badge warning" hidden>仅演示素材 · 预录音</span></div><div class="top-status"><span id="connection-pill" class="status-pill"><i></i>连接中</span><span id="output-pill" class="status-pill"><i></i>未推流</span><button id="logout" class="icon-button" title="退出登录" aria-label="退出登录">退出</button></div></header>
-<section id="projects-home" class="projects-home" hidden><div class="projects-intro"><div><p class="eyebrow">YOUR LIVE SHOWS</p><h2>从一场直播开始。</h2><p>为每个主题保存自己的口播、素材、平台和 AI 配置，下次直接打开。</p></div><div class="projects-main-actions"><button id="copy-current-project" class="ghost">复制当前场次</button><button id="new-project" class="primary">＋ 新建场次</button></div></div><div class="projects-list-heading"><h3>直播场次</h3><span id="project-count" class="muted small">正在加载…</span><button id="refresh-projects" class="small-button">刷新</button></div><div id="project-list" class="project-grid"><p class="empty-copy">正在读取已保存的场次…</p></div><p id="projects-error" class="error" role="alert" hidden></p><p class="projects-note">当前场次的服务在后台运行。打开列表不会停止口播、推流或录制；运行中切换到另一场次，会先提醒停止当前输出。</p></section>
-<div id="project-workspace" hidden><div class="project-context"><button id="open-projects" class="subtle">← 直播场次</button><span class="project-context-divider"></span><div><small>当前场次</small><strong id="current-project-name">正在加载…</strong></div><button id="rename-current-project" class="small-button">重命名</button><span class="project-saved-hint">设置保存到此场次</span></div>
-<nav class="main-tabs" aria-label="导播台分区"><button class="active" data-tab="director">导播台</button><button data-tab="materials">素材与画面</button><button data-tab="intelligence">AI 与语音</button><button data-tab="broadcast">平台与推流</button><div class="tab-extra"><span class="cloud-dot"></span> 后台渲染 · 关闭控制页仍可运行</div></nav>
-<main>
-<div id="global-alert" class="notice error-notice" role="alert" hidden></div>
-<section class="tab-panel" data-panel="director">
-  <div class="workspace">
-    <aside class="scene-sidebar panel"><div class="panel-heading"><h2>场景</h2><span class="badge">16:9</span></div><button class="scene-item selected" data-layout="standard"><span class="mini-scene">▤ <i>云</i></span><span>演示与虚拟主播<small>主画面 + 小云 + 社群</small></span></button><button class="scene-item" data-layout="avatar"><span class="mini-scene avatar-mini">云</span><span>主播全景<small>面对面聊一会儿</small></span></button><button class="scene-item" data-layout="slides"><span class="mini-scene">▤</span><span>纯演示画面<small>聚焦内容</small></span></button><button class="scene-item" data-layout="green"><span class="mini-scene green-mini">云</span><span>独立绿幕<small>兼容外部合成</small></span></button><div class="sidebar-bottom"><span class="muted small">所有场景都由后台合成</span><button class="subtle" data-tab-target="materials">编辑画面 →</button></div></aside>
-    <section class="preview-area">
-      <div class="preview-grid"><article class="monitor"><div class="monitor-title"><span><i class="square blue"></i>演示源</span><small id="slide-position">尚未载入演示稿</small></div><div class="monitor-screen"><img id="slide-preview" alt="当前演示页" hidden><div class="monitor-empty" id="slide-empty"><span>▤</span><strong>从你的内容开始</strong><p>导入 HTML 演示稿，或填写演示页网址</p><button class="subtle" data-tab-target="materials">添加演示素材 →</button></div></div><div class="monitor-footer"><button class="small-button" data-action="presentation.first" title="回到第一页">⇤ 首页</button><button class="small-button" data-action="presentation.prev">← 上一页</button><span id="slide-title" class="ellipsis">内容载入后，小云会结合讲解笔记分享</span><button class="small-button" data-action="presentation.next">下一页 →</button></div></article>
-      <article class="monitor program-monitor"><div class="monitor-title"><span><i class="square red"></i>节目画面</span><small id="program-resolution">后台正在准备</small></div><div class="monitor-screen"><img id="program-preview" alt="后台合成的实际节目画面" hidden><div class="monitor-empty" id="program-empty"><span>◉</span><strong>节目画面尚未生成</strong><p>后台就绪后，这里展示实际合成结果</p></div></div><div class="monitor-footer"><span class="muted small">预览来自后台渲染，不依赖当前浏览器</span><a class="small-button" href="/api/frame.jpg" target="_blank" rel="noopener">查看原图 ↗</a></div></article></div>
-      <section class="director-strip panel"><div class="now-stage"><span class="live-dot" id="stage-dot"></span><div><small>当前环节</small><strong id="current-stage">准备就绪</strong></div><div class="stage-description" id="stage-description">配置模型和语音后，即可开始 AI 直播。</div></div><div class="flow-track" aria-label="直播流程"><span data-stage-node="opening">开场</span><i>→</i><span data-stage-node="source">讲解</span><i>⇄</i><span data-stage-node="comment">弹幕</span><i>⇄</i><span data-stage-node="engagement">互动</span><i>→</i><span data-stage-node="closing">告别</span></div><div class="director-actions"><button class="primary" data-action="live.start" id="live-start">▶ 开始 AI 播报</button><button data-action="live.pause" id="live-pause">Ⅱ 暂停</button><button data-action="live.resume" id="live-resume" hidden>▶ 继续</button><button data-action="live.restart">↺ 从头播报</button><button data-action="live.finish">结束并告别</button><button class="danger ghost" data-action="live.stop">立即停止</button></div><p class="helper">AI 播报与 RTMP 推流独立控制。先预览画面，再启动推流；暂停 AI 不会断开推流。</p></section>
-      <div class="bottom-grid"><section class="panel mixer-panel"><div class="panel-heading"><h2>混音台</h2><div class="local-sound-control"><span id="monitor-state" class="sr-only" aria-live="polite">静音</span><button id="monitor-toggle" class="small-button" aria-pressed="false">本机声音 · 未开启</button><button id="monitor-mute" class="small-button ghost" hidden>仅本机静音</button></div></div><p id="monitor-description" class="local-sound-description" aria-live="polite">点击口播时自动开启本机声音；只影响这台浏览器，不影响推流或录制。</p><div class="mixer-channels"><div class="mixer-channel"><strong>小云声音</strong><div class="meter"><i id="voice-meter"></i></div><span id="voice-level">−∞ dB</span><small>语音播放时驱动口型</small></div><div class="mixer-channel"><strong>背景音乐</strong><div class="meter"><i id="bgm-meter"></i></div><span id="bgm-level">−∞ dB</span><small>说话时自动压低</small></div><div class="mixer-channel"><strong>输出总线</strong><div class="meter"><i id="output-meter"></i></div><span id="output-level">−∞ dB</span><small>画面与声音一同推流</small></div></div><div class="bgm-inline"><label for="quick-bgm">BGM</label><select id="quick-bgm"><option value="">不播放背景音乐</option></select><button id="apply-bgm" class="small-button">应用</button><input type="range" min="0" max="1" step="0.01" id="quick-bgm-volume" value="0.12" aria-label="BGM 音量"><span id="bgm-volume-label">12%</span></div></section>
-      <section class="panel output-panel"><div class="panel-heading"><h2>播出控制</h2><span id="output-mode" class="badge">未连接平台</span></div><div class="output-metrics"><div><span id="output-duration">00:00:00</span><small>推流时长</small></div><div><span id="fps-value">—</span><small>渲染 FPS</small></div><div><span id="dropped-value">0</span><small>丢帧</small></div></div><button class="primary wide" data-action="output.start" id="output-start">● 开始推流 / 录制</button><button class="danger wide" data-action="output.stop" id="output-stop" hidden>■ 停止推流 / 录制</button><button class="subtle wide" data-tab-target="broadcast">管理直播平台 →</button><div id="output-platform-summary" class="output-platform-summary"></div><p id="output-error" class="error small" hidden></p></section></div>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>小云 Studio · 云端 AI 导播台</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1">
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/workspace.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace-main">跳转到工作区内容</a>
+    <section id="login-screen" class="login-screen" hidden="">
+      <div class="login-card">
+        <div class="brand-mark">云</div>
+        <p class="eyebrow">XIAOYUN STUDIO</p>
+        <h1>把直播间，交给云端。</h1>
+        <p>一个导播台，完成讲解、互动、画面合成与推流。</p>
+        <form id="login-form">
+          <label>管理员密码<input id="login-password" type="password" autocomplete="current-password" required="" autofocus="" placeholder="部署时设置的管理员密码">
+          </label>
+          <button class="primary" type="submit">进入导播台 <span>→</span>
+          </button>
+        </form>
+        <p id="login-error" class="error" role="alert">
+        </p>
+        <p class="muted small">首次运行的随机密码保存在服务数据目录的 first-login.txt 中。</p>
+      </div>
     </section>
-    <aside class="interaction-sidebar">
-      <section class="panel conversation"><div class="panel-heading"><h2>人机对话</h2><span id="microphone-state" class="muted small">麦克风已关闭</span></div><div id="conversation-log" class="message-log" aria-live="polite"><p class="empty-copy">你可以打字，或打开麦克风与小云对话。</p></div><form id="chat-form"><label class="sr-only" for="chat-text">与小云说话</label><textarea id="chat-text" rows="2" placeholder="向小云提问，或让她回应某个话题…"></textarea><div class="chat-buttons"><button type="button" id="microphone-toggle">🎙 开启语音</button><button type="submit" class="primary">发送 →</button></div></form><details class="mic-settings"><summary>麦克风与噪声门</summary><label>输入设备<select id="microphone-device"><option value="">系统默认麦克风</option></select></label><div class="mic-detect-row"><button id="refresh-devices" class="small-button">刷新设备</button><div class="meter"><i id="microphone-meter"></i></div></div><label class="range-label">噪声门 <output id="vad-threshold-label">3.0%</output><input id="vad-threshold" type="range" min="0.01" max="0.12" step="0.005" value="0.03"></label><p class="helper">连续识别；小云说话时仍可开口提问。闭麦不打断 AI 播报。</p></details></section>
-      <section class="panel comment-panel"><div class="panel-heading"><h2>直播弹幕</h2><span id="comment-count" class="badge">0 条</span></div><div id="comment-list" class="comment-list"><p class="empty-copy">尚未收到弹幕，连接采集端后会显示在这里。</p></div><div class="comment-controls"><button class="subtle" id="open-channels">管理弹幕连接 →</button><button class="small-button" id="demo-comment">发送测试弹幕</button></div></section>
-      <section class="panel sale-panel"><div class="panel-heading"><h2>活动场控</h2><span id="sale-status" class="badge">未展示</span></div><p class="helper">活动在当前完整口播播完后插入；讲解页面照常推进。</p><div class="two-buttons"><button data-action="sale.queue">▦ 展示秒杀码</button><button data-action="sale.hide" class="ghost">收起</button></div><button data-action="lottery.queue" class="wide">✧ 安排口令抽奖</button><p id="lottery-status" class="muted small">抽奖结果将进入场控记录</p><button class="subtle" data-tab-target="materials">自动秒杀与奖品设置 →</button></section>
-    </aside>
+    <div id="studio" hidden="">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark small-mark">云</span>
+          <div>
+            <h1>小云 <b>Studio</b>
+            </h1>
+            <span>云端 AI 导播台</span>
+          </div>
+          <span id="demo-badge" class="badge warning" hidden="">仅演示素材 · 预录音</span>
+        </div>
+        <div class="top-status">
+          <span id="connection-pill" class="status-pill">
+            <i>
+            </i>连接中</span>
+          <span id="output-pill" class="status-pill">
+            <i>
+            </i>未推流</span>
+          <button id="logout" class="icon-button" title="退出登录" aria-label="退出登录">退出</button>
+        </div>
+      </header>
+      <section id="projects-home" class="projects-home" hidden="">
+        <div class="projects-intro">
+          <div>
+            <p class="eyebrow">YOUR LIVE SCENES</p>
+            <h2>先搭好场景，再开始直播。</h2>
+            <p>场景保存可复用的口播、素材、平台和 AI 配置；每次开播会生成独立场次。</p>
+          </div>
+          <div class="projects-main-actions">
+            <button id="copy-current-project" class="ghost">复制当前场景</button>
+            <button id="new-project" class="primary">＋ 新建场景</button>
+          </div>
+        </div>
+        <div class="projects-list-heading">
+          <h3>直播场景</h3>
+          <span id="project-count" class="muted small">正在加载…</span>
+          <button id="refresh-projects" class="small-button">刷新</button>
+        </div>
+        <div id="project-list" class="project-grid">
+          <p class="empty-copy">正在读取已保存的场景…</p>
+        </div>
+        <p id="projects-error" class="error" role="alert" hidden="">
+        </p>
+        <p class="projects-note">返回列表会关闭本机声音和麦克风；后台直播与录制继续运行。切换到其他场景前，会提醒结束当前场次。</p>
+      </section>
+      <div id="project-workspace" hidden="">
+        <div class="workspace-shell">
+          <aside class="workspace-navigation">
+            <div class="nav-caption">工作空间</div>
+            <nav class="workspace-nav" role="tablist" aria-label="工作空间分区" aria-orientation="vertical">
+              <button data-tab="director" id="nav-director" role="tab" aria-controls="panel-director" aria-selected="true" tabindex="0" class="active">
+                <span class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="13" rx="2">
+                    </rect>
+                    <path d="M8 21h8M12 17v4">
+                    </path>
+                    <path d="m10 8 5 3-5 3z">
+                    </path>
+                  </svg>
+                </span>
+                <span>直播控制<small>预览与实时操作</small>
+                </span>
+              </button>
+              <button data-tab="broadcasts" id="nav-broadcasts" role="tab" aria-controls="panel-broadcasts" aria-selected="false" tabindex="-1">
+                <span class="nav-icon" aria-hidden="true">◷</span>
+                <span>直播场次<small>历史记录 · 数据复盘</small></span>
+              </button>
+              <span class="nav-group" role="presentation">开播准备</span>
+              <button data-tab="visuals" id="nav-visuals" role="tab" aria-controls="panel-visuals" aria-selected="false" tabindex="-1">
+                <span class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2">
+                    </rect>
+                    <path d="m3 16 5-5 5 5 4-4 4 4">
+                    </path>
+                    <circle cx="16" cy="9" r="1">
+                    </circle>
+                  </svg>
+                </span>
+                <span>画面展示<small>演示稿 · 布局 · 素材</small>
+                </span>
+              </button>
+              <button data-tab="persona" id="nav-persona" role="tab" aria-controls="panel-persona" aria-selected="false" tabindex="-1">
+                <span class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="8" r="4">
+                    </circle>
+                    <path d="M4 21v-2a8 8 0 0 1 16 0v2">
+                    </path>
+                  </svg>
+                </span>
+                <span>主播设定<small>人物身份 · 音色</small>
+                </span>
+              </button>
+              <button data-tab="program" id="nav-program" role="tab" aria-controls="panel-program" aria-selected="false" tabindex="-1">
+                <span class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M9 6h12M9 12h12M9 18h12M3 5l1 1 2-2M3 11l1 1 2-2M3 17l1 1 2-2">
+                    </path>
+                  </svg>
+                </span>
+                <span>节目编排<small>口播 · 抽奖 · 音乐</small>
+                </span>
+              </button>
+              <button data-tab="connections" id="nav-connections" role="tab" aria-controls="panel-connections" aria-selected="false" tabindex="-1">
+                <span class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="m10 13 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(1 0) scale(.9)">
+                    </path>
+                  </svg>
+                </span>
+                <span>外部连接<small>直播平台 · AI 服务</small>
+                </span>
+              </button>
+            </nav>
+            <div class="nav-runtime">
+              <span class="cloud-dot">
+              </span>
+              <div>云端持续运行<small>关闭控制页仍可播出</small>
+              </div>
+            </div>
+          </aside>
+          <div class="workspace-content">
+            <div class="project-context">
+              <button id="open-projects" class="subtle">← 直播场景</button>
+              <span class="project-context-divider">
+              </span>
+              <div>
+                <small>当前场景</small>
+                <strong id="current-project-name">正在加载…</strong>
+              </div>
+              <button id="rename-current-project" class="small-button">重命名</button>
+              <span class="project-saved-hint" id="workspace-save-state" aria-live="polite">场景设置已保存</span>
+              <button class="primary save-settings" id="save-workspace-settings" disabled="">保存场景设置</button>
+            </div>
+            <main id="workspace-main" tabindex="-1">
+              <div id="global-alert" class="notice error-notice" role="alert" hidden="">
+              </div>
+              <section class="tab-panel" data-panel="director" id="panel-director" role="tabpanel" aria-labelledby="nav-director">
+                <div class="page-heading">
+                  <div>
+                    <p class="eyebrow">LIVE CONSOLE</p>
+                    <h2>直播控制</h2>
+                    <p>看画面、听声音，掌握正在播出的每一刻。</p>
+                  </div>
+                  <button class="ghost" data-tab-target="program">查看节目编排 →</button>
+                </div>
+                <section class="panel broadcast-current" aria-label="当前直播场次">
+                  <div><small>当前场次</small><strong id="broadcast-current-title">尚未开播</strong><span id="broadcast-current-description">开始推流或录制后，自动记录新场次。</span></div>
+                  <div class="broadcast-current-stats"><span><b id="broadcast-current-duration">—</b><small>本场时长</small></span><span><b id="broadcast-current-comments">—</b><small>已收弹幕</small></span></div>
+                  <button class="ghost" data-tab-target="broadcasts">查看场次</button>
+                  <button id="broadcast-end" class="danger" hidden>结束本场直播</button>
+                </section>
+                <details class="preflight" open="">
+                  <summary>
+                    <span>开播准备 <small>按这四步，准备好本场直播</small>
+                    </span>
+                    <span class="preflight-summary" id="preflight-summary">查看配置</span>
+                  </summary>
+                  <div class="preflight-grid">
+                    <button data-tab-target="visuals" data-subtab-target="content">
+                      <span class="preflight-number">01</span>
+                      <span>
+                        <strong>画面展示</strong>
+                        <small id="preflight-visuals">正在读取配置…</small>
+                      </span>
+                      <span class="preflight-arrow">↗</span>
+                    </button>
+                    <button data-tab-target="persona">
+                      <span class="preflight-number">02</span>
+                      <span>
+                        <strong>主播设定</strong>
+                        <small id="preflight-persona">正在读取配置…</small>
+                      </span>
+                      <span class="preflight-arrow">↗</span>
+                    </button>
+                    <button data-tab-target="program" data-subtab-target="flow">
+                      <span class="preflight-number">03</span>
+                      <span>
+                        <strong>节目编排</strong>
+                        <small id="preflight-program">正在读取配置…</small>
+                      </span>
+                      <span class="preflight-arrow">↗</span>
+                    </button>
+                    <button data-tab-target="connections" data-subtab-target="platforms">
+                      <span class="preflight-number">04</span>
+                      <span>
+                        <strong>外部连接</strong>
+                        <small id="preflight-connections">正在读取配置…</small>
+                      </span>
+                      <span class="preflight-arrow">↗</span>
+                    </button>
+                  </div>
+                </details>
+                <div class="workspace">
+                  <section class="preview-area">
+                    <div class="preview-grid">
+                      <article class="monitor program-monitor">
+                        <div class="monitor-title">
+                          <span>
+                            <i class="square red">
+                            </i>节目画面</span>
+                          <small id="program-resolution">后台正在准备</small>
+                        </div>
+                        <div class="monitor-screen">
+                          <img id="program-preview" alt="后台合成的实际节目画面" hidden="">
+                          <div class="monitor-empty" id="program-empty">
+                            <span>◉</span>
+                            <strong>节目画面尚未生成</strong>
+                            <p>后台就绪后，这里展示实际合成结果</p>
+                          </div>
+                        </div>
+                        <div class="monitor-footer">
+                          <span class="muted small">预览来自后台渲染，不依赖当前浏览器</span>
+                          <a class="small-button" href="/api/frame.jpg" target="_blank" rel="noopener">查看原图 ↗</a>
+                        </div>
+                      </article>
+                      <article class="monitor">
+                        <div class="monitor-title">
+                          <span>
+                            <i class="square blue">
+                            </i>演示源</span>
+                          <small id="slide-position">尚未载入演示稿</small>
+                        </div>
+                        <div class="monitor-screen">
+                          <img id="slide-preview" alt="当前演示页" hidden="">
+                          <div class="monitor-empty" id="slide-empty">
+                            <span>▤</span>
+                            <strong>从你的内容开始</strong>
+                            <p>导入 HTML 演示稿，或填写演示页网址</p>
+                            <button class="subtle" data-tab-target="visuals">添加 HTML / PDF →</button>
+                          </div>
+                        </div>
+                        <div class="monitor-footer">
+                          <button class="small-button" data-action="presentation.first" title="回到第一页">⇤ 首页</button>
+                          <button class="small-button" data-action="presentation.prev">← 上一页</button>
+                          <span id="slide-title" class="ellipsis">内容载入后，小云会结合讲解笔记分享</span>
+                          <button class="small-button" data-action="presentation.next">下一页 →</button>
+                        </div>
+                      </article>
+                    </div>
+                    <section class="director-strip panel">
+                      <div class="now-stage">
+                        <span class="live-dot" id="stage-dot">
+                        </span>
+                        <div>
+                          <small>当前环节</small>
+                          <strong id="current-stage">准备就绪</strong>
+                        </div>
+                        <div class="stage-description" id="stage-description">配置模型和语音后，即可开始 AI 直播。</div>
+                      </div>
+                      <p id="live-voice-status" class="live-voice-status" role="status" hidden></p><p id="live-speech-chunks" class="live-voice-status" role="status" hidden></p><p id="live-queue-status" class="live-voice-status" role="status" hidden></p><p id="live-page-progress" class="live-voice-status" role="status" hidden></p>
+                      <div class="flow-track" aria-label="直播流程">
+                        <span data-stage-node="opening">开场</span>
+                        <i>→</i>
+                        <span data-stage-node="source">讲解</span>
+                        <i>⇄</i>
+                        <span data-stage-node="comment">弹幕</span>
+                        <i>⇄</i>
+                        <span data-stage-node="engagement">互动</span>
+                        <i>→</i>
+                        <span data-stage-node="closing">告别</span>
+                      </div>
+                      <div class="director-actions">
+                        <button class="primary" data-action="live.start" id="live-start">▶ 开始 AI 播报</button>
+                        <button data-action="live.pause" id="live-pause">Ⅱ 暂停</button>
+                        <button data-action="live.resume" id="live-resume" hidden="">▶ 继续</button>
+                        <button data-action="live.finish" id="live-finish">结束并告别</button>
+                      </div>
+                      <div class="manual-sale-controls" aria-label="手动秒杀控制">
+                        <div class="manual-sale-actions">
+                          <button data-action="sale.queue" id="live-sale-insert">下一环节插入秒杀</button>
+                          <button data-action="sale.hide" id="live-sale-cancel" class="ghost" hidden>取消插入</button>
+                        </div>
+                        <p id="sale-status" class="manual-sale-status" role="status">当前整段口播播完后插入，讲解画面保持当前页。</p>
+                      </div>
+                      <details class="more-director-controls">
+                        <summary>更多控制</summary>
+                        <div>
+                          <button data-action="live.restart">↺ 从头播报</button>
+                          <button class="danger ghost" data-action="live.stop">立即停止</button>
+                        </div>
+                      </details>
+                      <p class="helper">AI 播报与 RTMP 推流独立控制。先预览画面，再启动推流；暂停 AI 不会断开推流。</p>
+                    </section>
+                    <section class="panel cues-panel">
+                      <div class="panel-heading">
+                        <h2>节目快捷操作</h2>
+                        <button class="subtle" data-tab-target="program" data-subtab-target="cues">编排固定口播 →</button>
+                      </div>
+                      <div id="cue-list" class="cue-list">
+                        <p class="empty-copy">添加口播文字，或导入已有录音。</p>
+                      </div>
+                      <form id="say-form" class="inline-form">
+                        <input id="say-text" placeholder="临时口播内容，小云会直接朗读" aria-label="临时口播内容">
+                        <button type="submit">播报</button>
+                      </form>
+                      <details class="live-activity-controls">
+                        <summary>手动抽奖</summary>
+                        <div class="live-activity-body">
+                          <button data-action="lottery.queue" class="wide">✧ 安排口令抽奖</button>
+                          <p id="lottery-status" class="muted small">抽奖结果将进入场控记录</p>
+                          <button class="subtle" data-tab-target="program" data-subtab-target="activities">设置活动规则与奖品 →</button>
+                        </div>
+                      </details>
+                    </section>
+                    <div class="bottom-grid">
+                      <section class="panel mixer-panel">
+                        <div class="panel-heading">
+                          <h2>混音台</h2>
+                          <div class="local-sound-control">
+                            <span id="monitor-state" class="sr-only" aria-live="polite">静音</span>
+                            <button id="monitor-toggle" class="small-button" aria-pressed="false">本机声音 · 未开启</button>
+                            <button id="monitor-mute" class="small-button ghost" hidden="">仅本机静音</button>
+                          </div>
+                        </div>
+                        <p id="monitor-description" class="local-sound-description" aria-live="polite">点击口播时自动开启本机声音；只影响这台浏览器，不影响推流或录制。</p>
+                        <div class="mixer-channels">
+                          <div class="mixer-channel">
+                            <strong>小云声音</strong>
+                            <div class="meter">
+                              <i id="voice-meter">
+                              </i>
+                            </div>
+                            <span id="voice-level">−∞ dB</span>
+                            <small>语音播放时驱动口型</small>
+                          </div>
+                          <div class="mixer-channel">
+                            <strong>背景音乐</strong>
+                            <div class="meter">
+                              <i id="bgm-meter">
+                              </i>
+                            </div>
+                            <span id="bgm-level">−∞ dB</span>
+                            <small>说话时自动压低</small>
+                          </div>
+                          <div class="mixer-channel">
+                            <strong>输出总线</strong>
+                            <div class="meter">
+                              <i id="output-meter">
+                              </i>
+                            </div>
+                            <span id="output-level">−∞ dB</span>
+                            <small>画面与声音一同推流</small>
+                          </div>
+                        </div>
+                        <div class="bgm-inline">
+                          <label for="quick-bgm">BGM</label>
+                          <select id="quick-bgm">
+                            <option value="">不播放背景音乐</option>
+                          </select>
+                          <button id="apply-bgm" class="small-button">应用</button>
+                          <input type="range" min="0" max="1" step="0.01" id="quick-bgm-volume" value="0.12" aria-label="BGM 音量">
+                          <span id="bgm-volume-label">12%</span>
+                        </div>
+                      </section>
+                      <section class="panel activity-panel">
+                        <div class="panel-heading">
+                          <h2>运行记录</h2>
+                          <div class="download-links">
+                            <button class="subtle" data-tab-target="broadcasts">场次数据与导出 →</button>
+                          </div>
+                        </div>
+                        <div id="activity-log" class="activity-log">
+                          <p class="empty-copy">状态变化、活动与错误会显示在这里。</p>
+                        </div>
+                      </section>
+                    </div>
+                  </section>
+                  <aside class="interaction-sidebar">
+                    <section class="panel output-panel">
+                      <div class="panel-heading">
+                        <h2>播出控制</h2>
+                        <span id="output-mode" class="badge">未连接平台</span>
+                      </div>
+                      <div class="output-metrics">
+                        <div>
+                          <span id="output-duration">00:00:00</span>
+                          <small>推流时长</small>
+                        </div>
+                        <div>
+                          <span id="fps-value">—</span>
+                          <small>渲染 FPS</small>
+                        </div>
+                        <div>
+                          <span id="dropped-value">0</span>
+                          <small>丢帧</small>
+                        </div>
+                      </div>
+                      <button class="primary wide" data-action="output.start" id="output-start">● 开始推流 / 录制</button>
+                      <button class="danger wide" data-action="output.stop" id="output-stop" hidden="">■ 停止推流 / 录制</button>
+                      <button class="subtle wide" data-tab-target="connections">管理直播平台 →</button>
+                      <button id="external-broadcast-start" class="ghost wide">记录外部开播</button>
+                      <p id="broadcast-output-help" class="helper">推流或录制成功后自动建档。使用直播姬等外部软件时，点击「记录外部开播」开始计时。</p>
+                      <div id="output-platform-summary" class="output-platform-summary">
+                      </div>
+                      <p id="output-error" class="error small" hidden="">
+                      </p>
+                    </section>
+                    <section class="panel comment-panel">
+                      <div class="panel-heading">
+                        <h2>直播弹幕</h2>
+                        <span id="comment-count" class="badge">0 条</span>
+                      </div>
+                      <div id="comment-list" class="comment-list">
+                        <p class="empty-copy">尚未收到弹幕，连接采集端后会显示在这里。</p>
+                      </div>
+                      <div class="comment-controls">
+                        <button class="subtle" id="open-channels">管理弹幕连接 →</button>
+                        <button class="small-button" id="demo-comment" type="button" aria-expanded="false" aria-controls="test-comment-form">发送测试弹幕</button>
+                      </div>
+                      <form id="test-comment-form" class="test-comment-form" hidden>
+                        <label for="test-comment-nickname">测试昵称
+                          <input id="test-comment-nickname" type="text" maxlength="100" value="场控测试" autocomplete="off">
+                        </label>
+                        <label for="test-comment-content">弹幕内容
+                          <textarea id="test-comment-content" rows="3" maxlength="500" placeholder="输入想测试的问题，例如：开启秒杀" required></textarea>
+                        </label>
+                        <label class="test-comment-batch"><input id="test-comment-batch" type="checkbox">批量发送（一行一条）</label>
+                        <p id="test-comment-format" class="helper" hidden>最多 1000 条，可写「小明｜开启秒杀」。未写昵称时，使用上方测试昵称。</p>
+                        <p class="helper">AI 播报运行时，会回应这些测试弹幕。</p>
+                        <p id="test-comment-error" class="error small" role="alert" hidden></p>
+                        <p id="test-comment-status" class="helper" role="status" aria-live="polite" hidden></p>
+                        <div class="test-comment-actions">
+                          <button id="test-comment-cancel" type="button" class="ghost">收起</button>
+                          <button id="test-comment-send" type="submit" class="primary" disabled>发送测试弹幕</button>
+                        </div>
+                      </form>
+                    </section>
+                    <section class="panel conversation">
+                      <div class="panel-heading">
+                        <h2>人机对话</h2>
+                        <span id="microphone-state" class="muted small">麦克风已关闭</span>
+                      </div>
+                      <div id="conversation-log" class="message-log" aria-live="polite">
+                        <p class="empty-copy">你可以打字，或打开麦克风与小云对话。</p>
+                      </div>
+                      <form id="chat-form">
+                        <label class="sr-only" for="chat-text">与小云说话</label>
+                        <textarea id="chat-text" rows="2" placeholder="向小云提问，或让她回应某个话题…"></textarea>
+                        <div class="chat-buttons">
+                          <button type="button" id="microphone-toggle">🎙 开启语音</button>
+                          <button type="submit" class="primary">发送 →</button>
+                        </div>
+                      </form>
+                      <details class="mic-settings">
+                        <summary>麦克风与噪声门</summary>
+                        <label>输入设备<select id="microphone-device">
+                            <option value="">系统默认麦克风</option>
+                          </select>
+                        </label>
+                        <div class="mic-detect-row">
+                          <button id="refresh-devices" class="small-button">刷新设备</button>
+                          <div class="meter">
+                            <i id="microphone-meter">
+                            </i>
+                          </div>
+                        </div>
+                        <label class="range-label">噪声门 <output id="vad-threshold-label">3.0%</output>
+                          <input id="vad-threshold" type="range" min="0.01" max="0.12" step="0.005" value="0.03">
+                        </label>
+                        <p class="helper">连续识别；小云说话时仍可开口提问。闭麦不打断 AI 播报。</p>
+                      </details>
+                    </section>
+                  </aside>
+                </div>
+              </section>
+              <section class="tab-panel settings-panel" data-panel="visuals" hidden="" id="panel-visuals" role="tabpanel" aria-labelledby="nav-visuals">
+                <div class="page-heading">
+                  <div>
+                    <p class="eyebrow">ON SCREEN</p>
+                    <h2>画面展示</h2>
+                    <p>把观众会看到的内容放在这里：演示稿、画面布局、标题与二维码。</p>
+                  </div>
+                </div>
+                <nav class="section-tabs" role="tablist" aria-label="画面展示分类">
+                  <button data-subtab="content" role="tab" id="section-tab-visuals-content" aria-controls="section-visuals-content" aria-selected="true" tabindex="0" class="active">演示内容</button>
+                  <button data-subtab="appearance" role="tab" id="section-tab-visuals-appearance" aria-controls="section-visuals-appearance" aria-selected="false" tabindex="-1">画面包装</button>
+                  <button data-subtab="assets" role="tab" id="section-tab-visuals-assets" aria-controls="section-visuals-assets" aria-selected="false" tabindex="-1">素材库</button>
+                </nav>
+                <section class="section-page" data-subpanel="content" id="section-visuals-content" role="tabpanel" aria-labelledby="section-tab-visuals-content">
+                  <div class="settings-grid">
+                    <section class="panel setting-card">
+                      <h3>演示稿与讲解笔记</h3>
+                      <label>HTML 演示页地址<input data-config="presentation.url" placeholder="https://… 或上传后的素材地址">
+                      </label>
+                      <div class="form-actions">
+                        <button id="load-presentation" class="primary">载入演示页</button>
+                        <label class="upload-button">上传 HTML / PDF<input class="asset-upload" type="file" accept=".html,.htm,.pdf" data-upload-target="presentation.url" hidden="">
+                        </label>
+                      </div>
+                      <label>补充讲解笔记<textarea data-config="presentation.notes" rows="8" placeholder="背景信息、必须提到的要点。按 ## 幻灯片 1 分页，可与当前页一起交给 AI。"></textarea>
+                      </label>
+                      <label class="upload-button compact">导入文字笔记<input type="file" id="notes-upload" accept=".md,.txt" hidden="">
+                      </label>
+                      <p class="helper">支持 HTML 和 PDF。补充笔记可按「## 幻灯片 1」分页，帮助主播讲清当前页。</p>
+                    </section>
+                    <section class="panel setting-card presentation-preview-card">
+                      <div class="presentation-preview-heading"><h3>演示稿预览</h3><span class="badge" id="content-page-count">尚未载入</span></div>
+                      <p id="content-live-position" class="presentation-live-position">载入演示稿后显示当前页数</p>
+                      <div class="presentation-preview-modes" role="group" aria-label="演示稿预览方式">
+                        <button id="content-preview-live" class="active" aria-pressed="true">跟随播出</button>
+                        <button id="content-preview-browse" aria-pressed="false" disabled>自由预览</button>
+                      </div>
+                      <div id="content-preview-follow" class="presentation-preview-screen">
+                        <img id="content-slide-preview" alt="服务器当前正在讲解的演示页" hidden>
+                        <div class="monitor-empty" id="content-slide-empty"><span>▤</span><strong>演示稿尚未载入</strong><p>载入后，在这里查看后台当前画面。</p></div>
+                      </div>
+                      <div id="content-preview-independent" hidden>
+                        <div class="presentation-preview-screen" id="content-preview-viewport"><iframe id="content-preview-frame" title="独立演示稿预览，翻页不影响直播" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe></div>
+                        <div class="presentation-preview-navigation">
+                          <button id="content-preview-prev" disabled>← 上一页</button>
+                          <select id="content-preview-page" aria-label="选择预览页" disabled></select>
+                          <button id="content-preview-next" disabled>下一页 →</button>
+                        </div>
+                      </div>
+                      <p id="content-preview-caption" class="helper">跟随后台当前画面；此处不操作直播翻页。</p>
+                      <p id="content-preview-error" class="error" role="alert" hidden></p>
+                      <div class="presentation-playback-status" aria-live="polite">
+                        <p id="content-advance-status">自动翻页：等待载入</p>
+                        <p id="content-loop-status">循环：等待载入</p>
+                        <p id="content-talk-status"></p>
+                        <p id="content-last-advance"></p>
+                      </div>
+                      <p id="content-preview-draft" class="helper" hidden>地址有未载入的修改。当前预览仍是已保存的演示稿；点击「载入演示页」才会更换直播内容。</p>
+                      <a id="content-preview-original" class="small-button" target="_blank" rel="noopener noreferrer" hidden>在新窗口查看原稿 ↗</a>
+                      <button class="subtle" data-tab-target="program" data-subtab-target="flow">设置自动翻页与循环 →</button>
+                      <button class="subtle" data-tab-target="director">到直播控制操作实际翻页 →</button>
+                    </section>
+                  </div>
+                </section>
+                <section class="section-page" data-subpanel="appearance" hidden="" id="section-visuals-appearance" role="tabpanel" aria-labelledby="section-tab-visuals-appearance">
+                  <div class="settings-grid appearance-grid">
+                    <section class="panel setting-card layout-picker-card">
+                      <div class="card-intro"><h3>选一个观众看到的画面</h3><p>画面布局决定演示稿和小云怎么摆放，主播声音与节目安排独立设置。</p></div>
+                      <p class="layout-illustration-note">下方是位置示意，实际播出会使用你的演示稿、人物和二维码。</p>
+                      <div class="layout-options" aria-label="常用画面布局">
+<button type="button" class="layout-card" data-layout="standard" aria-pressed="false"><span class="layout-card-art"><svg viewBox="0 0 480 270" aria-hidden="true" focusable="false"><defs><filter id="layout-key-standard" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -.5 1 -.5 0 0" result="greenExcess"/><feComponentTransfer in="greenExcess" result="greenMask"><feFuncA type="linear" slope="8" intercept="-4"/></feComponentTransfer><feComposite in="SourceGraphic" in2="greenMask" operator="out"/></filter></defs><rect width="480" height="270" fill="#eaf5ff"/><text x="15" y="23" fill="#315c91" font-size="13" font-weight="700">直播主题</text><path d="M15 31h450" stroke="#cadcf2"/><rect x="15" y="44" width="354" height="202" rx="7" fill="#fff" stroke="#73a5e8" stroke-width="2"/><text x="192.0" y="130" text-anchor="middle" fill="#2b568f" font-size="22" font-weight="700">你的演示稿</text><rect x="41" y="155" width="302" height="6" rx="3" fill="#d7e5f6"/><rect x="41" y="171" width="244" height="6" rx="3" fill="#e4edf8"/><rect x="370" y="46" width="103" height="106" rx="9" fill="#f8fbff" stroke="#afcbed"/><image data-layout-avatar x="367" y="43" width="109" height="112" filter="url(#layout-key-standard)"/><text x="421.5" y="169" text-anchor="middle" fill="#315b93" font-size="12" font-weight="700">小云</text><rect x="385" y="185" width="78" height="51" rx="5" fill="#f9fcff" stroke="#b8cce5" stroke-dasharray="4 3"/><text x="424.0" y="208.5" text-anchor="middle" fill="#7190b9" font-size="10">社群入口</text><text x="424.0" y="222.5" text-anchor="middle" fill="#91a7c3" font-size="9">可选</text><text x="15" y="261" fill="#7b98be" font-size="8">人物、字幕和二维码可在下方设置</text></svg></span><span class="layout-card-copy"><span class="layout-card-heading"><strong>演示稿 + 小云</strong><span class="layout-card-tag">常用</span><span class="layout-card-selected">✓ 已选</span></span><span class="layout-card-description">一边展示内容，一边由小云讲解。</span><span class="layout-card-audience">适合：课程、产品介绍、主题分享</span></span></button><button type="button" class="layout-card" data-layout="avatar" aria-pressed="false"><span class="layout-card-art"><svg viewBox="0 0 480 270" aria-hidden="true" focusable="false"><defs><filter id="layout-key-avatar" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -.5 1 -.5 0 0" result="greenExcess"/><feComponentTransfer in="greenExcess" result="greenMask"><feFuncA type="linear" slope="8" intercept="-4"/></feComponentTransfer><feComposite in="SourceGraphic" in2="greenMask" operator="out"/></filter></defs><rect width="480" height="270" fill="#eaf5ff"/><text x="15" y="23" fill="#315c91" font-size="13" font-weight="700">直播主题</text><path d="M15 31h450" stroke="#cadcf2"/><rect x="141" y="35" width="198" height="201" rx="9" fill="#f8fbff" stroke="#afcbed"/><image data-layout-avatar x="138" y="32" width="204" height="207" filter="url(#layout-key-avatar)"/><text x="240.0" y="253" text-anchor="middle" fill="#315b93" font-size="12" font-weight="700">小云</text><rect x="371" y="165" width="91" height="72" rx="5" fill="#f9fcff" stroke="#b8cce5" stroke-dasharray="4 3"/><text x="416.5" y="199.0" text-anchor="middle" fill="#7190b9" font-size="10">社群入口</text><text x="416.5" y="213.0" text-anchor="middle" fill="#91a7c3" font-size="9">可选</text><text x="15" y="261" fill="#7b98be" font-size="8">人物、字幕和二维码可在下方设置</text></svg></span><span class="layout-card-copy"><span class="layout-card-heading"><strong>小云大画面</strong><span class="layout-card-selected">✓ 已选</span></span><span class="layout-card-description">不放演示稿，把小云放大在中间。</span><span class="layout-card-audience">适合：聊天、答疑、互动</span></span></button><button type="button" class="layout-card" data-layout="slides" aria-pressed="false"><span class="layout-card-art"><svg viewBox="0 0 480 270" aria-hidden="true" focusable="false"><defs><filter id="layout-key-slides" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -.5 1 -.5 0 0" result="greenExcess"/><feComponentTransfer in="greenExcess" result="greenMask"><feFuncA type="linear" slope="8" intercept="-4"/></feComponentTransfer><feComposite in="SourceGraphic" in2="greenMask" operator="out"/></filter></defs><rect width="480" height="270" fill="#eaf5ff"/><text x="15" y="23" fill="#315c91" font-size="13" font-weight="700">直播主题</text><path d="M15 31h450" stroke="#cadcf2"/><rect x="15" y="44" width="450" height="202" rx="7" fill="#fff" stroke="#73a5e8" stroke-width="2"/><text x="240.0" y="130" text-anchor="middle" fill="#2b568f" font-size="22" font-weight="700">你的演示稿</text><rect x="41" y="155" width="398" height="6" rx="3" fill="#d7e5f6"/><rect x="41" y="171" width="340" height="6" rx="3" fill="#e4edf8"/><text x="15" y="261" fill="#7b98be" font-size="8">人物、字幕和二维码可在下方设置</text></svg></span><span class="layout-card-copy"><span class="layout-card-heading"><strong>只显示演示稿</strong><span class="layout-card-selected">✓ 已选</span></span><span class="layout-card-description">隐藏人物与社群入口，让内容占据主要画面。</span><span class="layout-card-audience">小云的声音照常播放</span></span></button>
+                      </div>
+                      <details class="advanced-layout" id="advanced-layout"><summary>进阶：给 OBS 等外部软件提供小云绿幕</summary><p class="helper">外部软件去掉绿色背景后，可以把小云叠加到其他画面里。直接用小云 Studio 播出时，通常选上面的布局。</p>
+<button type="button" class="layout-card" data-layout="green" aria-pressed="false"><span class="layout-card-art"><svg viewBox="0 0 480 270" aria-hidden="true" focusable="false"><defs><filter id="layout-key-green" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feColorMatrix in="SourceGraphic" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -.5 1 -.5 0 0" result="greenExcess"/><feComponentTransfer in="greenExcess" result="greenMask"><feFuncA type="linear" slope="8" intercept="-4"/></feComponentTransfer><feComposite in="SourceGraphic" in2="greenMask" operator="out"/></filter></defs><rect width="480" height="270" fill="#00ff00"/><image data-layout-avatar x="102" y="-3" width="276" height="276" filter="url(#layout-key-green)"/></svg></span><span class="layout-card-copy"><span class="layout-card-heading"><strong>小云绿幕</strong><span class="layout-card-selected">✓ 已选</span></span><span class="layout-card-description">只输出绿色背景和小云，不带演示稿、标题或字幕。</span><span class="layout-card-audience">适合：使用外部软件合成画面</span></span></button>
+                      </details>
+                      <input type="hidden" data-config="scene.layout.mode" value="standard">
+                      <div class="layout-selection-summary" aria-live="polite"><div><strong id="layout-choice-title">当前选择：演示稿 + 小云</strong><p id="layout-choice-description"></p><p id="layout-choice-warning" class="layout-choice-warning" hidden></p></div><span id="layout-choice-state" class="badge">已保存</span></div>
+                      <div class="layout-picker-actions"><button type="button" id="save-and-preview-layout" class="primary">保存场景并查看实际画面 →</button><span class="helper">点选后先保留为草稿，保存后应用到播出画面。</span></div>
+                    </section>
+                    <section class="panel setting-card">
+                      <h3>标题与字幕</h3>
+                      <label>直播标题<input data-config="scene.title" placeholder="云上 AI 工坊"></label>
+                      <label>副标题<input data-config="scene.subtitle" placeholder="AI 干货分享 · 一起创造更多可能"></label>
+                      <label>背景颜色<input type="color" data-config="scene.background" value="#eaf5ff"></label>
+                      <label class="check-label"><input type="checkbox" data-config="scene.layout.showCaptions">显示当前口播字幕</label>
+                      <p id="layout-caption-help" class="helper">口播时，字幕显示在画面下方。</p>
+                    </section>
+                    <section class="panel setting-card">
+                      <h3>人物与社群入口</h3>
+                      <div class="checks"><label><input type="checkbox" data-config="scene.layout.showAvatar">显示小云</label><label><input type="checkbox" data-config="scene.layout.showCommunity">显示社群入口</label></div>
+                      <p id="layout-elements-help" class="helper"></p>
+                      <label>社群二维码<input data-config="scene.communityQrUrl" placeholder="上传社群二维码图片"></label>
+                      <label class="upload-button compact">上传社群二维码<input class="asset-upload" type="file" accept="image/png,image/jpeg,image/webp" data-upload-target="scene.communityQrUrl" hidden></label>
+                      <label>二维码说明<input data-config="scene.communityLabel" placeholder="扫码加入用户交流群"></label>
+                      <p class="helper">没有上传二维码时，社群入口显示互动提示。</p>
+                      <button class="subtle" data-tab-target="persona">修改人物身份与显示名称 →</button>
+                    </section>
+                  </div>
+                </section>
+                <section class="section-page" data-subpanel="assets" hidden="" id="section-visuals-assets" role="tabpanel" aria-labelledby="section-tab-visuals-assets">
+                  <section class="panel asset-library">
+                    <div class="panel-heading">
+                      <h3>素材库</h3>
+                      <span id="asset-count" class="muted small">
+                      </span>
+                    </div>
+                    <div id="asset-list" class="asset-list">
+                      <p class="empty-copy">上传的素材仅保存在你的服务中。</p>
+                    </div>
+                    <label class="upload-button library-upload">＋ 上传素材<input class="asset-upload" type="file" accept=".html,.htm,.pdf,image/png,image/jpeg,image/webp,audio/*,.mp3,.wav,.m4a,.ogg" hidden="">
+                    </label>
+                  </section>
+                </section>
+              </section>
+              <section class="tab-panel settings-panel" data-panel="persona" hidden="" id="panel-persona" role="tabpanel" aria-labelledby="nav-persona">
+                <div class="page-heading">
+                  <div>
+                    <p class="eyebrow">YOUR PRESENTER</p>
+                    <h2>主播设定</h2>
+                    <p>选择主播人格，调整身份、表达方式和声音。服务地址与密钥在外部连接中管理。</p>
+                  </div>
+                </div>
+                <section class="panel persona-library" aria-labelledby="persona-library-title">
+                  <div class="panel-heading">
+                    <div><h3 id="persona-library-title">人格设置</h3><p>从内置人格开始，也可以保留自己的提示词。</p></div>
+                    <span id="persona-current" class="badge" aria-live="polite">当前：知识分享</span>
+                  </div>
+                  <input type="hidden" data-config="identity.personaId" value="xiaoyun">
+                  <div id="persona-presets" class="persona-presets" role="group" aria-label="选择要预览的人格"></div>
+                  <div class="persona-preview">
+                    <div class="persona-preview-heading"><div><h4 id="persona-preview-name">知识分享</h4><p id="persona-preview-description"></p></div><button id="apply-persona" class="primary" type="button">应用此人格</button></div>
+                    <div id="persona-preview-tags" class="persona-tags"></div>
+                    <details class="persona-prompt-details"><summary id="persona-preview-summary">查看完整内置提示词</summary><pre id="persona-preview-prompt"></pre></details>
+                    <a id="persona-reference" class="persona-reference" target="_blank" rel="noopener" hidden></a>
+                    <p class="helper">应用会替换下方系统提示词，保留名称、音色与节目安排；点击「保存场景设置」后生效。</p>
+                  </div>
+                </section>
+                <div class="settings-grid">
+                  <section class="panel setting-card">
+                    <h3>人物身份与表达方式</h3>
+                    <label>角色名称<input data-config="identity.name" placeholder="小云">
+                    </label>
+                    <label>画面中的显示名称<input data-config="scene.avatarName" placeholder="小云">
+                    </label>
+                    <label>系统提示词<textarea data-config="identity.systemPrompt" rows="10" placeholder="你是谁、面向什么观众、希望怎样分享；以主讲人口吻表达内容。"></textarea>
+                    </label>
+                    <p class="helper">可在内置人格的基础上继续编辑；调整后的提示词会随当前场景保存。</p>
+                    <details id="runtime-prompts-viewer" class="runtime-prompts-viewer"><summary>查看各环节实际提示词</summary><p class="helper">展示当前场景已保存、实际运行的提示词。未保存的草稿不会显示在这里。</p><button type="button" id="refresh-runtime-prompts" class="subtle">刷新提示词</button><div id="runtime-prompts-content" aria-live="polite"></div></details>
+                  </section>
+                  <section class="panel setting-card">
+                    <div class="card-intro">
+                      <h3>声音与语速</h3>
+                      <p>选择这个人物的音色与说话速度。</p>
+                    </div>
+                    <label id="tts-voice-preset-label">选择直播音色<select id="tts-voice-preset"></select></label>
+                    <div id="tts-custom-voice-fields"><label>自定义音色 ID / 名称<input data-config="tts.voice" placeholder="供应商提供的音色 ID"></label></div>
+                    <label class="range-label">语速 <output id="speech-speed-label">1.0×</output>
+                      <input type="range" min="0.6" max="2" step="0.05" data-config="tts.speed">
+                    </label>
+                    <details class="voice-preview-script"><summary>修改试听文案</summary><label>试听文案<textarea id="voice-preview-text" rows="2" maxlength="150">你好，我是小云，欢迎来到直播间。今天我们一起聊聊有趣的新发现。</textarea></label></details>
+                    <button class="subtle" data-provider-preview>试听所选音色</button>
+                    <p class="helper">试听使用已保存的服务凭证，不保存草稿或改变直播声音。选好后点击「保存场景设置」生效。</p>
+                    <p id="persona-provider-test-result" role="status" class="helper" hidden></p><audio id="persona-voice-preview" controls preload="none" hidden></audio>
+                    <p id="tts-demo-hint" class="notice" hidden="">演示模式仅用于体验界面与音视频链路，使用明确标注的预录音；正式直播请配置语音供应商。</p>
+                    <button class="subtle" data-tab-target="connections" data-subtab-target="services">配置语音服务 →</button>
+                  </section>
+                </div>
+              </section>
+              <section class="tab-panel settings-panel" data-panel="program" hidden="" id="panel-program" role="tabpanel" aria-labelledby="nav-program">
+                <div class="page-heading">
+                  <div>
+                    <p class="eyebrow">SHOW PLANNING</p>
+                    <h2>节目编排</h2>
+                    <p>安排一场直播如何展开：开场、讲解、互动、活动，再到收尾。</p>
+                  </div>
+                </div>
+                <nav class="section-tabs" role="tablist" aria-label="节目编排分类">
+                  <button data-subtab="flow" role="tab" id="section-tab-program-flow" aria-controls="section-program-flow" aria-selected="true" tabindex="0" class="active">流程与节奏</button>
+                  <button data-subtab="cues" role="tab" id="section-tab-program-cues" aria-controls="section-program-cues" aria-selected="false" tabindex="-1">固定口播</button>
+                  <button data-subtab="activities" role="tab" id="section-tab-program-activities" aria-controls="section-program-activities" aria-selected="false" tabindex="-1">互动活动</button>
+                  <button data-subtab="music" role="tab" id="section-tab-program-music" aria-controls="section-program-music" aria-selected="false" tabindex="-1">背景音乐</button>
+                </nav>
+                <section class="section-page" data-subpanel="flow" id="section-program-flow" role="tabpanel" aria-labelledby="section-tab-program-flow">
+                  <section class="panel setting-card program-editor-card">
+                    <div class="panel-heading"><div><h3>启用与编排环节</h3><p class="helper">讲解持续推进，弹幕与互动满足各自节奏时穿插；顺序决定同时满足条件时的优先次序，不代表每个环节各执行一次。手动口播和活动优先插入。</p></div></div>
+                    <div class="program-presets"><span>快捷设置</span><button type="button" data-program-preset="lecture" class="small-button">只讲内容</button><button type="button" data-program-preset="interactive" class="small-button">多互动</button><button type="button" data-program-preset="no-lottery" class="small-button">不抽奖</button><button type="button" data-program-preset="no-closing" class="small-button">不用结尾</button></div>
+                    <label class="program-bookend"><input type="checkbox" data-config="program.opening"><span><strong>开场欢迎</strong><small>开始 AI 播报时播放一次，可关闭</small></span></label>
+                    <input type="hidden" data-config="program.order" data-json-array value='["source","comment","engagement","lottery","sale"]'>
+                    <div id="program-stage-editor" class="program-stage-editor" aria-label="中间环节顺序">
+                      <div class="program-stage-row" data-program-stage="source"><span class="program-position"></span><label><input type="checkbox" data-config="program.enabled.source"><span><strong>内容讲解</strong><small>讲解演示稿与本场主题</small></span></label><div><button type="button" data-program-move="up" aria-label="上移内容讲解" class="small-button">↑</button><button type="button" data-program-move="down" aria-label="下移内容讲解" class="small-button">↓</button></div></div>
+                      <div class="program-stage-row" data-program-stage="comment"><span class="program-position"></span><label><input type="checkbox" data-config="program.enabled.comment"><span><strong>弹幕回应</strong><small>有新弹幕并达到回应频率时进入</small></span></label><div><button type="button" data-program-move="up" aria-label="上移弹幕回应" class="small-button">↑</button><button type="button" data-program-move="down" aria-label="下移弹幕回应" class="small-button">↓</button></div></div>
+                      <div class="program-stage-row" data-program-stage="engagement"><span class="program-position"></span><label><input type="checkbox" data-config="program.enabled.engagement"><span><strong>互动引导</strong><small>按节奏提问、邀请点赞或分享</small></span></label><div><button type="button" data-program-move="up" aria-label="上移互动引导" class="small-button">↑</button><button type="button" data-program-move="down" aria-label="下移互动引导" class="small-button">↓</button></div></div>
+                      <div class="program-stage-row" data-program-stage="lottery"><span class="program-position"></span><label><input type="checkbox" data-config="program.enabled.lottery"><span><strong>抽奖</strong><small>规则满足或场控手动安排后进入</small></span></label><div><button type="button" data-program-move="up" aria-label="上移抽奖" class="small-button">↑</button><button type="button" data-program-move="down" aria-label="下移抽奖" class="small-button">↓</button></div></div>
+                      <div class="program-stage-row" data-program-stage="sale"><span class="program-position"></span><label><input type="checkbox" data-config="program.enabled.sale"><span><strong>秒杀提醒</strong><small>到达定时时间或场控手动安排后进入</small></span></label><div><button type="button" data-program-move="up" aria-label="上移秒杀提醒" class="small-button">↑</button><button type="button" data-program-move="down" aria-label="下移秒杀提醒" class="small-button">↓</button></div></div>
+                    </div>
+                    <label class="program-bookend"><input type="checkbox" data-config="program.closing"><span><strong>收尾告别</strong><small>取消后，结束播报或全稿播完时直接结束，不再念结束语</small></span></label>
+                    <div class="show-flow" id="program-flow-preview" aria-label="已编排的节目流程"></div>
+                    <p class="helper">以上修改随场景保存。关闭某个环节后，自动触发和直播控制中的对应手动活动都会停止安排。</p>
+                  </section>
+                  <div class="settings-grid">
+                    <section class="panel setting-card">
+                      <div class="card-intro">
+                        <h3>开场与收尾</h3>
+                        <p>先确定一场直播如何开始、如何结束，再设置中间的讲解节奏。</p>
+                      </div>
+                      <label>固定开场<textarea data-config="identity.welcome" rows="3" placeholder="欢迎观众，并引出本场主题"></textarea>
+                      </label>
+                      <label>固定结束语<textarea data-config="identity.goodbye" rows="3" placeholder="感谢观众与后续引导"></textarea>
+                      </label>
+                    </section>
+                    <section class="panel setting-card">
+                      <h3>直播节奏</h3>
+                      <label class="range-label">弹幕回应频率 <output id="comment-frequency-label">50%</output>
+                        <input type="range" min="0" max="100" step="5" data-config="live.commentFrequency">
+                      </label>
+                      <p class="helper">每轮读取最近100条窗口，由AI选择回应；有新问题时可在1–2段讲解之间穿插。回应后回到讲解，不固定接一段主动互动。</p>
+                      <div class="two-fields">
+                        <label>单段讲解目标（秒）<input type="number" min="10" max="90" data-config="live.pageSeconds">
+                        </label>
+                        <label>每页至少讲解（段）<input type="number" min="1" max="12" data-config="live.minPageTurns"></label>
+                        <label>弹幕回应目标（秒）<input type="number" min="5" max="30" data-config="live.commentSeconds">
+                        </label>
+                        <label>互动至少间隔（讲解段）<input type="number" min="1" max="20" data-config="live.engagementMinTurns">
+                        </label>
+                        <label>互动至少间隔（秒）<input type="number" min="0" max="1200" data-config="live.engagementCooldownSeconds">
+                        </label>
+                      </div>
+                      <label>互动引导要求<textarea data-config="live.engagementPrompt" rows="3" placeholder="例如：多问具体使用场景，少重复求点赞"></textarea></label>
+                      <label>无声恢复阈值（秒）<input type="number" min="120" max="600" data-config="live.silenceSeconds">
+                      </label>
+                      <p class="helper">单段讲解不等于一页。每页完成最低讲解段数并讲清要点后才自动翻页；弹幕和主动互动各自计数，手动切页随时生效。</p>
+                    </section>
+                  </div>
+                  <section class="panel setting-card">
+                    <div class="card-intro">
+                      <h3>演示稿播放规则</h3>
+                      <p>讲解和翻页同步；活动二维码展示期间，内容可以继续推进。</p>
+                    </div>
+                    <div class="checks">
+                      <label>
+                        <input type="checkbox" data-config="presentation.autoAdvance">讲清当前页后自动翻页</label>
+                      <label>
+                        <input type="checkbox" data-config="presentation.loop">全稿讲完从头续播</label>
+                    </div>
+                  </section>
+                </section>
+                <section class="section-page" data-subpanel="cues" hidden="" id="section-program-cues" role="tabpanel" aria-labelledby="section-tab-program-cues">
+                  <section class="panel cue-editor-panel">
+                    <div class="panel-heading">
+                      <h3>固定口播</h3>
+                      <button id="add-cue" class="small-button">＋ 新增口播</button>
+                    </div>
+                    <div id="cue-editor">
+                    </div>
+                    <p class="helper">为常用话术添加文字或录音。保存后，在直播控制的「节目快捷操作」中一键播报。</p>
+                  </section>
+                </section>
+                <section class="section-page" data-subpanel="activities" hidden="" id="section-program-activities" role="tabpanel" aria-labelledby="section-tab-program-activities">
+                  <p class="section-note">设置自动触发规则，也可以在直播控制中手动安排。活动会等待当前整段口播播完后插入。</p>
+                  <div class="settings-grid">
+                    <section class="panel setting-card">
+                      <p class="card-kicker">互动活动</p>
+                      <h3>抽奖设置</h3>
+                    <div class="lottery-rule-heading"><h4>抽奖触发规则 · 可多选</h4><label class="check-label"><input type="checkbox" data-config="lottery.enabled">启用自动触发</label></div>
+                    <p id="lottery-program-note" class="helper"></p>
+                    <div class="lottery-rule-grid">
+                      <section class="lottery-rule-card"><label class="lottery-rule-choice"><input type="checkbox" data-array-config="lottery.triggers" value="comment"><span><strong>弹幕触发</strong><small>收到指定弹幕后发起一轮抽奖</small></span></label><div data-trigger-fields="comment"><label>触发词<input data-config="lottery.commentTriggerKeyword" placeholder="抽奖"></label><p class="helper">这是发起抽奖的词。抽奖说明播完后，观众再发送上方参与口令参与。</p></div></section>
+                      <section class="lottery-rule-card"><label class="lottery-rule-choice"><input type="checkbox" data-array-config="lottery.triggers" value="popularity"><span><strong>人气触发</strong><small>任一平台的实际指标达到阈值</small></span></label><div data-trigger-fields="popularity"><label>人气指标<select data-config="lottery.popularityMetric"><option value="onlineUsers">在线人数</option><option value="heat">平台热度</option></select></label><label>达到阈值<input type="number" min="0" data-config="lottery.popularityThreshold"></label><p class="helper">不同平台不相加。相同阈值在本轮开播只触发一次。</p></div></section>
+                      <section class="lottery-rule-card"><label class="lottery-rule-choice"><input type="checkbox" data-array-config="lottery.triggers" value="interval"><span><strong>间隔定时</strong><small>每隔一段时间发起一轮</small></span></label><div data-trigger-fields="interval"><label>每隔（分钟）<input type="number" min="1" max="1440" data-config="lottery.intervalMinutes"></label></div></section>
+                      <section class="lottery-rule-card"><label class="lottery-rule-choice"><input type="checkbox" data-array-config="lottery.triggers" value="fixed"><span><strong>指定时刻</strong><small>到达北京时间时发起一轮</small></span></label><div data-trigger-fields="fixed"><label>一行一个 HH:mm<textarea data-config="lottery.fixedTimes" data-lines rows="2" placeholder="12:00&#10;18:00"></textarea></label></div></section>
+                    </div>
+                    <p class="helper">可只选一种，也可组合多种；任一已选规则满足就安排一轮。多条规则同时满足会合并，正在抽奖时不叠加新一轮。未选择的规则不参与触发。</p>
+                    <details class="lottery-participation" open><summary>参与方式与奖品</summary>
+                      <div class="two-fields">
+                        <label>参与口令<input data-config="lottery.keyword" placeholder="小云真可爱">
+                        </label>
+                        <label>参与时间（秒）<input type="number" min="5" max="120" data-config="lottery.waitSeconds">
+                        </label>
+                      </div>
+                      <label>奖品池：一行一份，可重复<textarea data-config="lottery.prizes" data-lines="" rows="4" placeholder="文化衫
+                        限定公仔"></textarea>
+                    </label>
+                    </details>
+
+
+                </section>
+                <section class="panel setting-card">
+                  <p class="card-kicker">限时活动</p>
+                  <h3>秒杀二维码</h3>
+                  <div class="two-fields">
+                    <label>展示时长（分钟）<input type="number" min="1" max="30" step="1" data-config="sale.durationSeconds" data-scale="60" value="30">
+                    </label>
+                  </div>
+                  <label>活动链接<input data-config="sale.link" placeholder="https://…">
+                  </label>
+                  <label>活动二维码<input data-config="sale.qrUrl" placeholder="上传二维码图片">
+                  </label>
+                  <label>秒杀专用口播<textarea data-config="sale.announcement" rows="4" maxlength="2000" placeholder="整点秒杀开始，请扫描屏幕右上角的二维码……"></textarea></label>
+                  <p class="helper">整点提醒会在当前整段口播结束后优先播出，不切换讲解页。可使用 {{minutes}} 表示二维码展示分钟数、{{time}} 表示北京时间。</p>
+                  <div class="sale-qr-setting">
+                    <img id="sale-qr-preview" alt="当前秒杀活动二维码" hidden>
+                    <div class="sale-qr-setting-info">
+                      <strong id="sale-qr-status" role="status">尚未配置秒杀二维码</strong>
+                      <p id="sale-qr-description" class="helper">上传活动二维码后可在这里预览。</p>
+                      <label class="upload-button compact"><span id="sale-qr-upload-label">上传秒杀二维码</span><input class="asset-upload" type="file" accept="image/png,image/jpeg,image/webp" data-upload-target="sale.qrUrl" hidden></label>
+                    </div>
+                  </div>
+                  <p class="helper">按北京时间对齐时钟触发；二维码跨页保留，最长 30 分钟，到期独立收起。展示期间不叠加另一张二维码。</p>
+                  <details data-auto-details="sale.enabled">
+                    <summary>定时展示规则（可选）</summary>
+                    <label class="check-label">
+                      <input type="checkbox" data-config="sale.enabled">启用定时秒杀</label>
+                    <label>触发间隔（分钟）<input type="number" min="5" max="1440" step="1" data-config="sale.intervalMinutes">
+                    </label>
+                    <label>开始时间（北京时间）<input type="datetime-local" data-config="sale.startAt" data-beijing="">
+                    </label>
+                    <label>结束时间（北京时间）<input type="datetime-local" data-config="sale.endAt" data-beijing="">
+                    </label>
+                  </details>
+                </section>
+              </div>
+            </section>
+            <section class="section-page" data-subpanel="music" hidden="" id="section-program-music" role="tabpanel" aria-labelledby="section-tab-program-music">
+              <section class="panel setting-card">
+                <div class="card-intro">
+                  <h3>背景音乐</h3>
+                  <p>设置本场音乐，以及主播说话时音乐保留的音量。</p>
+                </div>
+                <label>背景音乐<select data-config="bgm.asset" id="settings-bgm">
+                    <option value="">不播放背景音乐</option>
+                  </select>
+                </label>
+                <label class="upload-button compact">上传音乐<input class="asset-upload" type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg" data-upload-target="bgm.asset" hidden="">
+                </label>
+                <div class="two-fields">
+                  <label class="range-label">音乐音量<input type="range" min="0" max="1" step="0.01" data-config="bgm.volume">
+                  </label>
+                  <label class="range-label">说话时保留音量<input type="range" min="0" max="1" step="0.05" data-config="bgm.ducking">
+                  </label>
+                </div>
+              </section>
+              <p class="section-note">直播期间，可在直播控制的混音台快速切换音乐和音量。</p>
+            </section>
+          </section>
+          <section class="tab-panel settings-panel" data-panel="connections" hidden="" id="panel-connections" role="tabpanel" aria-labelledby="nav-connections">
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">CONNECTED SERVICES</p>
+                <h2>外部连接</h2>
+                <p>集中管理直播账号、扫码登录和 AI 服务。每个平台连接独立保存登录状态。</p>
+              </div>
+            </div>
+            <nav class="section-tabs" role="tablist" aria-label="外部连接分类">
+              <button data-subtab="platforms" role="tab" id="section-tab-connections-platforms" aria-controls="section-connections-platforms" aria-selected="true" tabindex="0" class="active">直播平台</button>
+              <button data-subtab="services" role="tab" id="section-tab-connections-services" aria-controls="section-connections-services" aria-selected="false" tabindex="-1">AI 与语音服务</button>
+              <button data-subtab="output" role="tab" id="section-tab-connections-output" aria-controls="section-connections-output" aria-selected="false" tabindex="-1">输出与录制</button>
+            </nav>
+            <section class="section-page" data-subpanel="platforms" id="section-connections-platforms" role="tabpanel" aria-labelledby="section-tab-connections-platforms">
+              <div class="section-toolbar">
+                <div>
+                  <h3>直播平台与账号</h3>
+                  <p>同一平台可添加多个账号；推流和弹幕分别连接。</p>
+                </div>
+                <button class="primary" id="add-platform">＋ 添加平台</button>
+              </div>
+              <section class="platforms-section" aria-label="直播平台连接">
+                <div class="platforms-heading">
+                  <p id="platform-count" class="muted small">正在加载平台…</p>
+                  <span class="helper">同时推流使用同一节目画面与声音</span>
+                </div>
+                <div id="platform-list" class="platform-grid">
+                  <div class="panel platform-empty">
+                    <span>＋</span>
+                    <h3>添加你的第一个直播平台</h3>
+                    <p>选择平台，填写推流地址与房间链接；再按需要连接弹幕。</p>
+                    <button class="primary" data-platform-ui="add">添加平台</button>
+                  </div>
+                </div>
+              </section>
+              <p class="section-note">平台连接在弹窗中单独保存。只采集弹幕时，可以不填写推流地址，并取消「参与同时推流」。</p>
+            </section>
+            <section class="section-page" data-subpanel="services" hidden="" id="section-connections-services" role="tabpanel" aria-labelledby="section-tab-connections-services">
+              <div class="settings-grid">
+                <section class="panel setting-card">
+                  <div class="card-intro"><h3>对话模型</h3><p>每次先请求主用，超时或失败后依次尝试备用。最多配置 4 个备用。</p></div>
+                  <label>完整回复等待上限（秒）<input type="number" min="1" max="120" step="1" data-config="llm.timeoutMs" data-scale="1000"></label>
+                  <p class="helper">默认 10 秒。连接、下载和口播格式校验都在这个时限内；失败通道冷却 60 秒后重新尝试。</p>
+                  <article class="provider-route">
+                    <h4>主用模型</h4>
+                    <label>API 地址<input data-config="llm.baseUrl" placeholder="https://…/v1"></label>
+                    <label>模型名称<input data-config="llm.model" placeholder="模型供应商提供的模型 ID"></label>
+                    <label>API Key<input type="password" data-secret="llmKey" autocomplete="new-password" placeholder="尚未配置"></label>
+                    <label>深度思考<select data-config="llm.thinking"><option value="default">跟随供应商默认</option><option value="disabled">关闭 · 减少等待</option><option value="enabled">开启</option></select></label>
+                    <p class="helper">仅在服务支持 thinking 参数时开启或关闭；不支持的服务请保留默认。</p>
+                    <button class="subtle" data-provider-test="model">测试主用连接</button>
+                  </article>
+                  <div id="fallback-editor"></div>
+                  <p class="helper" id="model-backup-empty">尚未添加备用模型。</p>
+                  <button type="button" id="add-model-backup">＋ 添加备用模型</button>
+                  <p id="model-active-route" class="helper"></p><pre id="model-provider-status" class="provider-status" aria-live="polite"></pre>
+                </section>
+                <section class="panel setting-card">
+                  <div class="card-intro"><h3>语音合成服务</h3><p>主用生成失败或超时，会改用下一个通道。备用可选另一个账号、供应商或音色。</p></div>
+                  <label>每段合成等待上限（秒）<input type="number" min="0.5" max="60" step="0.5" data-config="tts.timeoutMs" data-scale="1000"></label>
+                  <p class="helper">默认 5 秒。失败通道冷却 60 秒；成功音频会缓存，重复口播可直接使用。</p>
+                  <article class="provider-route">
+                    <h4>主用语音</h4>
+                    <label>语音供应商<select data-config="tts.provider" id="tts-provider"><option value="tencent">腾讯云超自然语音</option><option value="openai">兼容 Speech API</option><option value="demo">演示预录音（不是真实合成）</option></select></label>
+                    <div id="tencent-fields"><label>SecretId<input type="password" data-secret="tencentSecretId" autocomplete="new-password"></label><label>SecretKey<input type="password" data-secret="tencentSecretKey" autocomplete="new-password"></label></div>
+                    <div id="compatible-tts-fields"><label>API 地址<input data-config="tts.baseUrl" placeholder="https://…/v1"></label><label>API Key<input type="password" data-secret="ttsKey" autocomplete="new-password"></label><label>模型名称<input data-config="tts.model" placeholder="tts-1"></label></div>
+                    <p class="helper">主用音色和语速在「主播设定」中选择。演示预录音模式只播放固定素材，备用通道不会启用。</p>
+                    <div class="provider-actions"><button class="subtle" data-tab-target="persona">选择主用音色 →</button><button class="subtle" data-provider-preview>试听所选音色</button></div>
+                  </article>
+                  <div id="speech-fallback-editor"></div>
+                  <p class="helper" id="speech-backup-empty">尚未添加备用语音。</p>
+                  <button type="button" id="add-speech-backup">＋ 添加备用语音</button>
+                  <p id="speech-active-route" class="helper"></p><pre id="speech-provider-status" class="provider-status" aria-live="polite"></pre>
+                </section>
+                <section class="panel setting-card provider-test-panel"><h3>连接测试与音色试听</h3><p class="helper">模型测试会先保存当前场景。音色试听使用已保存的通道凭证，可试听草稿中的声音，不会保存或切换直播音色；修改供应商或凭证后需先保存。生成后点击播放器播放。</p><p id="provider-test-result" role="status" hidden></p><audio id="voice-preview" controls preload="none" hidden></audio></section>
+                <section class="panel setting-card">
+                  <div class="card-intro">
+                    <h3>语音识别</h3>
+                    <p>需要用麦克风与主播对话时，再配置这项服务。</p>
+                  </div>
+                  <label>ASR 服务地址<input data-config="asr.baseUrl" placeholder="http://asr:10095">
+                  </label>
+                  <p class="helper">支持 SenseVoice HTTP 服务。设备选择和噪声门在直播控制的人机对话面板中设置。</p>
+                </section>
+              </div>
+              <details class="panel advanced-connection">
+                <summary>高级接入：外部弹幕采集端</summary>
+                <label>采集密钥<input type="password" data-secret="commentIngestKey" autocomplete="new-password" placeholder="给你自己的采集端使用">
+                </label>
+                <div class="endpoint-copy">
+                  <small>弹幕上报</small>
+                  <code id="comments-endpoint">
+                  </code>
+                  <small>指标上报</small>
+                  <code id="metrics-endpoint">
+                  </code>
+                </div>
+                <p class="helper">请求带 X-Ingest-Key。浏览器后台登录是否有效取决于平台；云端推流不要求你的 Mac 一直打开 OBS 或演示窗口。</p>
+                <details>
+                  <summary>上报数据示例</summary>
+                  <pre>{"comments":[{"id":"唯一编号","nickname":"观众","content":"这可以做什么？","at":1720000000000}]}</pre>
+                  <pre>{"online":32,"likes":108,"popularity":320}</pre>
+                </details>
+              </details>
+            </section>
+            <section class="section-page" data-subpanel="output" hidden="" id="section-connections-output" role="tabpanel" aria-labelledby="section-tab-connections-output">
+              <div class="settings-grid">
+                <section class="panel setting-card">
+                  <div class="panel-heading">
+                    <h3>统一输出与录制</h3>
+                  </div>
+                  <p class="helper">所有启用的平台共享以下画质设置。修改画质前，请先停止输出。</p>
+                  <div class="two-fields">
+                    <label>输出宽度<input type="number" min="640" max="1920" step="2" data-config="output.width">
+                    </label>
+                    <label>输出高度<input type="number" min="360" max="1080" step="2" data-config="output.height">
+                    </label>
+                    <label>目标帧率<input type="number" min="5" max="30" data-config="output.fps">
+                    </label>
+                    <label>视频码率（kbps）<input type="number" min="300" max="16000" data-config="output.videoBitrate" placeholder="2500">
+                    </label>
+                    <label>音频码率（kbps）<input type="number" min="64" max="320" data-config="output.audioBitrate" placeholder="128">
+                    </label>
+                  </div>
+                  <label class="check-label">
+                    <input type="checkbox" data-config="output.record">同时保存本地录制文件</label>
+                  <button class="subtle" data-tab-target="director">前往直播控制开始推流 / 录制 →</button>
+                  <p class="helper">只录制时可不添加平台。正式推流前，请确认账号具备开播权限；平台端是否公开开播仍以各平台后台为准。</p>
+                </section>
+                <section class="panel setting-card diagnostics">
+                  <div class="panel-heading">
+                    <h3>运行检查</h3>
+                    <button id="refresh-setup" class="small-button">刷新</button>
+                  </div>
+                  <div id="setup-results">
+                    <p class="empty-copy">正在检查后台运行环境…</p>
+                  </div>
+                  <p class="helper">这里展示实际检测结果。绿色就绪不代表推流平台已接受你的直播，仍以平台后台为准。</p>
+                </section>
+              </div>
+            </section>
+          </section>
+            <section class="tab-panel" data-panel="broadcasts" id="panel-broadcasts" role="tabpanel" aria-labelledby="nav-broadcasts" hidden>
+              <div class="page-heading"><div><p class="eyebrow">BROADCAST HISTORY</p><h2>每次开播，都有记录。</h2><p>查看当前场景的每一场直播，回看人数、弹幕与播出过程。</p></div><button id="broadcast-refresh" class="ghost">刷新记录</button></div>
+              <p id="broadcast-history-scope" class="section-note">人数按平台分别记录，未采集的数据不会显示为 0。</p>
+              <div class="broadcast-history-layout">
+                <section class="panel broadcast-list-panel"><div class="panel-heading"><h3>直播场次</h3><span id="broadcast-total" class="badge">0 场</span></div><div id="broadcast-list"></div><div class="broadcast-pagination"><button id="broadcast-list-prev" class="small-button">上一页</button><span id="broadcast-list-page" class="muted small"></span><button id="broadcast-list-next" class="small-button">下一页</button></div></section>
+                <section class="panel broadcast-detail-panel" aria-label="场次详情"><div id="broadcast-detail"><p class="empty-copy">选择一场直播，查看实际播出记录。</p></div><div id="broadcast-events-section" hidden><div class="broadcast-events-heading"><h3>本场记录</h3><label class="sr-only" for="broadcast-event-filter">记录类型</label><select id="broadcast-event-filter"><option value="all">全部记录</option><option value="comment">弹幕</option><option value="metrics">人数与互动指标</option><option value="activity">播出与活动</option></select></div><div id="broadcast-events"></div><div class="broadcast-pagination"><button id="broadcast-events-prev" class="small-button">上一页</button><span id="broadcast-events-page" class="muted small"></span><button id="broadcast-events-next" class="small-button">下一页</button></div></div></section>
+              </div>
+            </section>
+        </main>
+        <div class="workspace-draftbar" id="workspace-draftbar" hidden="">
+          <div>
+            <strong>有未保存的设置</strong>
+            <span id="draft-scope">修改保留在当前页面，保存后生效</span>
+          </div>
+          <button id="discard-settings" class="ghost">撤销修改</button>
+          <button class="primary save-settings">保存场景设置</button>
+        </div>
+      </div>
+    </div>
   </div>
-  <div class="lower-grid"><section class="panel cues-panel"><div class="panel-heading"><h2>固定口播</h2><span class="muted small">已预合成的素材可直接播放</span></div><div id="cue-list" class="cue-list"><p class="empty-copy">添加口播文字，或导入已有录音。</p></div><form id="say-form" class="inline-form"><input id="say-text" placeholder="临时口播内容，小云会直接朗读" aria-label="临时口播内容"><button type="submit">播报</button></form></section><section class="panel activity-panel"><div class="panel-heading"><h2>运行记录</h2><div class="download-links"><a href="/api/report?format=json" download>JSON</a><a href="/api/report?format=csv" download>CSV</a><a href="/api/report?format=md" download>报告</a></div></div><div id="activity-log" class="activity-log"><p class="empty-copy">状态变化、活动与错误会显示在这里。</p></div></section></div>
-</section>
-<section class="tab-panel settings-panel" data-panel="materials" hidden>
-  <div class="section-intro"><div><p class="eyebrow">CONTENT & SCENE</p><h2>内容与画面，由你来定。</h2><p>导入演示稿，设置虚拟主播与活动；画面在后台持续渲染。</p></div><button class="primary save-settings">保存设置</button></div>
-  <div class="settings-grid"><section class="panel setting-card"><h3>演示与讲解素材</h3><label>HTML 演示页地址<input data-config="presentation.url" placeholder="https://… 或上传后的素材地址"></label><div class="form-actions"><button id="load-presentation" class="primary">载入演示页</button><label class="upload-button">上传 HTML / PDF<input class="asset-upload" type="file" accept=".html,.htm,.pdf" data-upload-target="presentation.url" hidden></label></div><label>补充讲解笔记<textarea data-config="presentation.notes" rows="8" placeholder="背景信息、必须提到的要点。按 ## 幻灯片 1 分页，可与当前页一起交给 AI。"></textarea></label><label class="upload-button compact">导入文字笔记<input type="file" id="notes-upload" accept=".md,.txt" hidden></label><div class="checks"><label><input type="checkbox" data-config="presentation.autoAdvance">讲清当前页后自动翻页</label><label><input type="checkbox" data-config="presentation.loop">全稿讲完从头续播</label></div><p class="helper">HTML 需要提供可见正文，支持常见演示框架与 nextSlide/prevSlide。不会因为触发秒杀而跳页。</p></section>
-  <section class="panel setting-card"><h3>节目包装与虚拟主播</h3><label>直播标题<input data-config="scene.title" placeholder="云上 AI 工坊"></label><label>副标题<input data-config="scene.subtitle" placeholder="AI 干货分享 · 一起创造更多可能"></label><div class="two-fields"><label>主播名称<input data-config="scene.avatarName" placeholder="小云"></label><label>背景颜色<input type="color" data-config="scene.background" value="#eaf5ff"></label></div><label>用户社群二维码<input data-config="scene.communityQrUrl" placeholder="上传二维码后，自动填入素材地址"></label><label class="upload-button compact">上传社群二维码<input class="asset-upload" type="file" accept="image/png,image/jpeg,image/webp" data-upload-target="scene.communityQrUrl" hidden></label><label>二维码说明<input data-config="scene.communityLabel" placeholder="扫码加入用户交流群"></label><div class="checks"><label><input type="checkbox" data-config="scene.layout.showAvatar">显示虚拟主播</label><label><input type="checkbox" data-config="scene.layout.showCommunity">显示社群二维码</label><label><input type="checkbox" data-config="scene.layout.showCaptions">显示当前口播字幕</label></div><p class="helper">人物表情直接切换，口型由后台实际播放的声音驱动。</p></section>
-  <section class="panel setting-card"><h3>秒杀二维码</h3><label class="check-label"><input type="checkbox" data-config="sale.enabled">启用定时秒杀</label><div class="two-fields"><label>触发间隔（分钟）<input type="number" min="5" max="1440" step="1" data-config="sale.intervalMinutes"></label><label>展示时长（分钟）<input type="number" min="1" max="30" step="1" data-config="sale.durationSeconds" data-scale="60" value="30"></label></div><div class="two-fields"><label>开始时间（北京时间）<input type="datetime-local" data-config="sale.startAt" data-beijing></label><label>结束时间（北京时间）<input type="datetime-local" data-config="sale.endAt" data-beijing></label></div><label>活动链接<input data-config="sale.link" placeholder="https://…"></label><label>活动二维码<input data-config="sale.qrUrl" placeholder="上传二维码图片"></label><label class="upload-button compact">上传秒杀二维码<input class="asset-upload" type="file" accept="image/png,image/jpeg,image/webp" data-upload-target="sale.qrUrl" hidden></label><p class="helper">按北京时间对齐时钟触发；二维码跨页保留，最长 30 分钟，到期独立收起。展示期间不叠加另一张二维码。</p></section>
-  <section class="panel setting-card"><h3>口令抽奖与音乐</h3><div class="two-fields"><label>参与口令<input data-config="lottery.keyword" placeholder="小云真可爱"></label><label>参与时间（秒）<input type="number" min="5" max="120" data-config="lottery.waitSeconds"></label></div><label>固定抽奖时刻（北京时间，一行一个）<textarea data-config="lottery.fixedTimes" data-lines rows="2" placeholder="12:00&#10;18:00"></textarea></label><label>奖品池：一行一份，可重复<textarea data-config="lottery.prizes" data-lines rows="4" placeholder="文化衫&#10;限定公仔"></textarea></label><div class="checks"><label><input type="checkbox" data-config="lottery.enabled">启用自动抽奖</label></div><div class="two-fields"><label>间隔（分钟）<input type="number" min="1" max="1440" data-config="lottery.intervalMinutes"></label><label>热度阈值（0 为关闭）<input type="number" min="0" data-config="lottery.popularityThreshold"></label></div><hr><label>背景音乐<select data-config="bgm.asset" id="settings-bgm"><option value="">不播放背景音乐</option></select></label><label class="upload-button compact">上传音乐<input class="asset-upload" type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg" data-upload-target="bgm.asset" hidden></label><div class="two-fields"><label class="range-label">音乐音量<input type="range" min="0" max="1" step="0.01" data-config="bgm.volume"></label><label class="range-label">说话时保留音量<input type="range" min="0" max="1" step="0.05" data-config="bgm.ducking"></label></div></section></div>
-  <section class="panel cue-editor-panel"><div class="panel-heading"><h3>固定口播编辑</h3><button id="add-cue" class="small-button">＋ 新增口播</button></div><div id="cue-editor"></div><p class="helper">文字可按当前音色合成；选择已上传的录音可直接播放。保存设置后，导播台出现对应按钮。</p></section>
-  <section class="panel asset-library"><div class="panel-heading"><h3>素材库</h3><span id="asset-count" class="muted small"></span></div><div id="asset-list" class="asset-list"><p class="empty-copy">上传的素材仅保存在你的服务中。</p></div></section>
-</section>
-<section class="tab-panel settings-panel" data-panel="intelligence" hidden>
- <div class="section-intro"><div><p class="eyebrow">AI & VOICE</p><h2>给你的虚拟主播，一点个性。</h2><p>配置模型、声音与直播节奏。所有合成与播放都由服务端完成。</p></div><button class="primary save-settings">保存设置</button></div>
- <div class="settings-grid"><section class="panel setting-card"><h3>角色与讲解方式</h3><label>角色名称<input data-config="identity.name" placeholder="小云"></label><label>系统提示词<textarea data-config="identity.systemPrompt" rows="10" placeholder="你是谁、面向什么观众、希望怎样分享；以主讲人口吻表达内容。"></textarea></label><label>固定开场<textarea data-config="identity.welcome" rows="3" placeholder="欢迎观众，并引出本场主题"></textarea></label><label>固定结束语<textarea data-config="identity.goodbye" rows="3" placeholder="感谢观众与后续引导"></textarea></label></section>
- <section class="panel setting-card"><h3>模型与备用通道</h3><label>API 地址<input data-config="llm.baseUrl" placeholder="https://…/v1"></label><label>模型名称<input data-config="llm.model" placeholder="模型供应商提供的模型 ID"></label><label>API Key<input type="password" data-secret="llmKey" autocomplete="new-password" placeholder="尚未配置"></label><details><summary>配置备用通道</summary><p class="helper">主通道超时或报错后依次切换。每组可单独配置模型服务；不需要的通道，地址和模型留空。</p><div id="fallback-editor"></div></details><hr><h3>语音识别</h3><label>ASR 服务地址<input data-config="asr.baseUrl" placeholder="http://asr:10095"></label><p class="helper">可连接 SenseVoice HTTP 服务。麦克风设备和噪声门在导播台设置。</p></section>
- <section class="panel setting-card"><h3>语音合成</h3><label>语音供应商<select data-config="tts.provider" id="tts-provider"><option value="tencent">腾讯云超自然语音</option><option value="openai">兼容 Speech API</option><option value="demo">演示预录音（不是真实合成）</option></select></label><div id="tencent-fields"><label>SecretId<input type="password" data-secret="tencentSecretId" autocomplete="new-password"></label><label>SecretKey<input type="password" data-secret="tencentSecretKey" autocomplete="new-password"></label></div><div id="compatible-tts-fields"><label>API 地址<input data-config="tts.baseUrl" placeholder="https://…/v1"></label><label>API Key<input type="password" data-secret="ttsKey" autocomplete="new-password"></label><label>模型名称<input data-config="tts.model" placeholder="tts-1"></label></div><label>音色 ID<input data-config="tts.voice" placeholder="腾讯云爱小悠：602003"></label><label class="range-label">语速 <output id="speech-speed-label">1.0×</output><input type="range" min="0.6" max="2" step="0.05" data-config="tts.speed"></label><p id="tts-demo-hint" class="notice" hidden>演示模式仅用于体验界面与音视频链路，使用明确标注的预录音；正式直播请配置语音供应商。</p></section>
- <section class="panel setting-card"><h3>直播节奏</h3><label class="range-label">弹幕回应频率 <output id="comment-frequency-label">50%</output><input type="range" min="0" max="100" step="5" data-config="live.commentFrequency"></label><p class="helper">最近两分钟、最多一百条未读弹幕进入本轮；每次回应后回到内容，整段口播完成才切换。</p><div class="two-fields"><label>单段讲解目标（秒）<input type="number" min="10" max="90" data-config="live.pageSeconds"></label><label>弹幕回应目标（秒）<input type="number" min="5" max="30" data-config="live.commentSeconds"></label><label>互动至少间隔（段）<input type="number" min="2" max="20" data-config="live.engagementMinTurns"></label><label>互动至少间隔（秒）<input type="number" min="30" max="1200" data-config="live.engagementCooldownSeconds"></label></div><label>无声恢复阈值（秒）<input type="number" min="120" max="600" data-config="live.silenceSeconds"></label><p class="helper">模型只携带当前页、角色提示和有界已播摘要；过去的弹幕不会无限累积。</p></section></div>
-</section>
-<section class="tab-panel settings-panel" data-panel="broadcast" hidden>
- <div class="section-intro"><div><p class="eyebrow">PLATFORMS & BROADCAST</p><h2>连接平台，把同一场直播播出去。</h2><p>每个平台独立连接推流和弹幕。推流凭证来自平台后台，房间链接用于读取观众反馈。</p></div><button class="primary" id="add-platform">＋ 添加平台</button></div>
- <section class="platforms-section" aria-label="直播平台连接"><div class="platforms-heading"><p id="platform-count" class="muted small">正在加载平台…</p><span class="helper">同时推流使用同一节目画面与声音</span></div><div id="platform-list" class="platform-grid"><div class="panel platform-empty"><span>＋</span><h3>添加你的第一个直播平台</h3><p>选择平台，填写推流地址与房间链接；再按需要连接弹幕。</p><button class="primary" data-platform-ui="add">添加平台</button></div></div></section>
- <div class="settings-grid"><section class="panel setting-card"><div class="panel-heading"><h3>统一输出与录制</h3><button class="primary save-settings">保存输出设置</button></div><p class="helper">所有启用的平台共享以下画质设置。修改画质前，请先停止输出。</p><div class="two-fields"><label>输出宽度<input type="number" min="640" max="1920" step="2" data-config="output.width"></label><label>输出高度<input type="number" min="360" max="1080" step="2" data-config="output.height"></label><label>目标帧率<input type="number" min="5" max="30" data-config="output.fps"></label><label>视频码率（kbps）<input type="number" min="300" max="16000" data-config="output.videoBitrate" placeholder="2500"></label><label>音频码率（kbps）<input type="number" min="64" max="320" data-config="output.audioBitrate" placeholder="128"></label></div><label class="check-label"><input type="checkbox" data-config="output.record">同时保存本地录制文件</label><div class="form-actions"><button class="primary" data-action="output.start">开始已启用平台 / 录制</button><button class="danger ghost" data-action="output.stop">停止全部输出</button></div><p class="helper">只录制时可不添加平台。正式推流前，请确认账号具备开播权限；平台端是否公开开播仍以各平台后台为准。</p></section>
- <section class="panel setting-card"><h3>弹幕与直播数据</h3><p>在上方平台卡片中连接弹幕。小云会汇总最近的观众反馈；收到真实直播消息后，卡片才会显示正在接收。</p><p class="notice">推流成功不等于弹幕已连接。扫码登录也不等于已收到直播消息；请分别检查卡片上的两个状态。</p><details><summary>接入自己的采集端（高级）</summary><label>采集密钥<input type="password" data-secret="commentIngestKey" autocomplete="new-password" placeholder="给你自己的采集端使用"></label><div class="endpoint-copy"><small>弹幕上报</small><code id="comments-endpoint"></code><small>指标上报</small><code id="metrics-endpoint"></code></div><p class="helper">请求带 X-Ingest-Key。浏览器后台登录是否有效取决于平台；云端推流不要求你的 Mac 一直打开 OBS 或演示窗口。</p><details><summary>上报数据示例</summary><pre>{"comments":[{"id":"唯一编号","nickname":"观众","content":"这可以做什么？","at":1720000000000}]}</pre><pre>{"online":32,"likes":108,"popularity":320}</pre></details></details><div class="download-links large"><a href="/api/report?format=json" download>导出 JSON</a><a href="/api/report?format=csv" download>导出 CSV</a><a href="/api/report?format=md" download>导出复盘报告</a></div></section>
- <section class="panel setting-card diagnostics"><div class="panel-heading"><h3>运行检查</h3><button id="refresh-setup" class="small-button">刷新</button></div><div id="setup-results"><p class="empty-copy">正在检查后台运行环境…</p></div><p class="helper">这里展示实际检测结果。绿色就绪不代表推流平台已接受你的直播，仍以平台后台为准。</p></section>
- <section class="panel setting-card"><h3>长时间直播</h3><ul class="feature-list"><li><b>共享控制状态</b><span>多台设备看到同一个环节；声音由服务端输出。</span></li><li><b>画面在后台</b><span>Chromium 无界面渲染，FFmpeg 编码，无需挂前台窗口。</span></li><li><b>有界上下文</b><span>角色提示常驻，只保留当前主题与近期已播摘要。</span></li><li><b>显式开播</b><span>服务重启后保持停止，检查就绪后由你决定开播。</span></li></ul><p class="notice">这是独立的 Studio 服务，不需要安装 DSH，也不需要 OBS 完成基础推流。</p></section></div>
-</section>
-</main></div>
-<section id="project-form-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-form-title" hidden><form id="project-form" class="project-modal"><div class="modal-heading"><div><p class="eyebrow">LIVE PROJECT</p><h2 id="project-form-title">新建直播场次</h2></div><button type="button" id="close-project-form" class="icon-button" aria-label="关闭场次表单">✕</button></div><p id="project-form-description" class="helper"></p><label>场次名称<input id="project-name" maxlength="80" required placeholder="例如：周五 AI 产品分享"></label><p id="project-form-error" class="error" role="alert" hidden></p><div class="project-modal-actions"><button type="button" id="cancel-project-form" class="ghost">取消</button><button type="submit" id="save-project" class="primary">创建场次</button></div></form></section>
-<section id="project-unsaved-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-unsaved-title" hidden><div class="project-modal"><div class="modal-heading"><h2 id="project-unsaved-title">先处理尚未保存的设置</h2><button id="close-project-unsaved" class="icon-button" aria-label="取消场次操作">✕</button></div><p>当前场次有尚未保存的设置。保存后可以带着最新内容继续；放弃后会恢复到上次保存的版本。</p><p id="project-unsaved-error" class="error" role="alert" hidden></p><div class="project-modal-actions"><button id="project-unsaved-cancel" class="ghost">取消</button><button id="project-unsaved-discard">放弃修改并继续</button><button id="project-unsaved-save" class="primary">保存并继续</button></div></div></section>
-<section id="project-busy-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-busy-title" hidden><div class="project-modal"><div class="modal-heading"><h2 id="project-busy-title">当前场次正在运行</h2><button id="close-project-busy" class="icon-button" aria-label="取消切换场次">✕</button></div><p id="project-busy-message"></p><p class="notice">继续会停止当前场次的口播、推流和录制，再打开所选场次。当前场次的设置会保留。</p><p id="project-busy-error" class="error" role="alert" hidden></p><div class="project-modal-actions"><button id="project-busy-cancel" class="ghost">保留当前场次</button><button id="project-force-switch" class="danger">停止当前输出并切换</button></div></div></section>
-<section id="project-delete-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-delete-title" hidden><div class="project-modal"><div class="modal-heading"><h2 id="project-delete-title">删除直播场次</h2><button id="close-project-delete" class="icon-button" aria-label="取消删除场次">✕</button></div><p id="project-delete-description"></p><p id="project-delete-error" class="error" role="alert" hidden></p><div class="project-modal-actions"><button id="project-delete-cancel" class="ghost">取消</button><button id="project-delete-confirm" class="danger">删除这个场次</button></div></div></section>
-<section id="platform-picker" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="platform-picker-title" hidden><div class="platform-picker-modal"><div class="modal-heading"><div><h2 id="platform-picker-title">添加直播平台</h2><p>同一平台可以添加多个直播间，最多 8 个连接。</p></div><button id="close-platform-picker" class="icon-button" aria-label="关闭平台选择">✕</button></div><div id="platform-catalog" class="platform-catalog"></div><p class="helper">所有平台均需自行获得开播权限。弹幕连接和登录状态会在连接后单独核对。</p></div></section>
-<section id="platform-editor" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="platform-editor-title" hidden><form id="platform-form" class="platform-editor-modal"><div class="modal-heading"><div><p class="eyebrow" id="platform-editor-kind"></p><h2 id="platform-editor-title">配置直播连接</h2></div><button type="button" id="close-platform-editor" class="icon-button" aria-label="关闭平台配置">✕</button></div><label>直播名称<input id="platform-name" maxlength="100" required placeholder="例如：我的日常直播"></label><label class="check-label"><input id="platform-enabled" type="checkbox" checked>参与同时推流</label><fieldset><legend>画面与声音 · RTMP / RTMPS 推流</legend><label>推流服务器地址<input id="platform-rtmp" type="text" placeholder="rtmp://…/live 或 rtmps://…/live" autocomplete="off"></label><label>推流密钥<input id="platform-key" type="password" autocomplete="new-password" placeholder="平台提供的串流密钥"></label><label class="check-label" id="platform-clear-key-row" hidden><input id="platform-clear-key" type="checkbox">清除已保存的推流密钥</label><p class="helper">地址与密钥分开保存。已保存的密钥不会回显，留空保持原值；只连接弹幕时可暂不填写推流信息。</p></fieldset><fieldset><legend>观众反馈 · 弹幕连接</legend><label>直播间链接或房间号<input id="platform-room" autocomplete="off" placeholder="平台官方直播间链接或房间号"></label><p id="platform-room-help" class="helper"></p><p class="helper">保存连接后，在平台卡片点击「连接弹幕」。需要登录时，在本页查看真实后台画面并扫码。</p></fieldset><p id="platform-editor-error" class="error" role="alert" hidden></p><div class="platform-form-actions"><button type="button" id="cancel-platform-editor" class="ghost">取消</button><button type="submit" class="primary" id="save-platform">保存连接</button></div></form></section>
-<section id="channels-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="channels-title" hidden><div class="channels-modal"><div class="modal-heading"><div><h2 id="channels-title">连接平台弹幕</h2><p id="channels-description">浏览器在服务器上运行；按平台要求完成登录。</p></div><button id="close-channels" class="icon-button" aria-label="关闭平台连接窗口">✕</button></div><div class="channels-toolbar"><span id="channels-status" class="badge">未连接</span><button id="connect-channels" class="primary">连接直播间</button><button id="login-channels">扫码登录</button><button id="disconnect-channels" class="ghost">断开监听</button><button id="refresh-channels" class="small-button">刷新画面</button></div><p id="channels-detail" class="helper"></p><div id="channels-error" class="error small" hidden></div><div class="channels-frame"><img id="channels-image" alt="平台浏览器的真实页面" hidden><p id="channels-empty">点击「连接直播间」读取弹幕；如果平台要求登录，请在这里完成扫码。</p></div><p class="helper">登录期间可点击画面操作登录页；登录后只读采集。开播后收到真实直播消息才会显示弹幕；连接浏览器并不代表已经对外开播。</p></div></section><footer class="statusbar"><span id="footer-status">正在连接后台</span><span id="settings-dirty" hidden>● 有未保存的设置</span><span class="push-right">Xiaoyun Studio · 云端自主运行</span></footer>
-<div id="toast" role="status" hidden></div>
-</div><script type="module" src="/app.mjs"></script></body></html>
+  <section id="project-form-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-form-title" hidden="">
+    <form id="project-form" class="project-modal">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow">LIVE PROJECT</p>
+          <h2 id="project-form-title">新建直播场景</h2>
+        </div>
+        <button type="button" id="close-project-form" class="icon-button" aria-label="关闭场景表单">✕</button>
+      </div>
+      <p id="project-form-description" class="helper">
+      </p>
+      <label>场景名称<input id="project-name" maxlength="80" required="" placeholder="例如：周五 AI 产品分享">
+      </label>
+      <p id="project-form-error" class="error" role="alert" hidden="">
+      </p>
+      <div class="project-modal-actions">
+        <button type="button" id="cancel-project-form" class="ghost">取消</button>
+        <button type="submit" id="save-project" class="primary">创建场景</button>
+      </div>
+    </form>
+  </section>
+  <section id="project-unsaved-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-unsaved-title" hidden="">
+    <div class="project-modal">
+      <div class="modal-heading">
+        <h2 id="project-unsaved-title">先处理尚未保存的设置</h2>
+        <button id="close-project-unsaved" class="icon-button" aria-label="取消场景操作">✕</button>
+      </div>
+      <p>当前场景有尚未保存的设置。保存后可以带着最新内容继续；放弃后会恢复到上次保存的版本。</p>
+      <p id="project-unsaved-error" class="error" role="alert" hidden="">
+      </p>
+      <div class="project-modal-actions">
+        <button id="project-unsaved-cancel" class="ghost">取消</button>
+        <button id="project-unsaved-discard">放弃修改并继续</button>
+        <button id="project-unsaved-save" class="primary">保存并继续</button>
+      </div>
+    </div>
+  </section>
+  <section id="project-busy-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-busy-title" hidden="">
+    <div class="project-modal">
+      <div class="modal-heading">
+        <h2 id="project-busy-title">当前场景正在运行</h2>
+        <button id="close-project-busy" class="icon-button" aria-label="取消切换场景">✕</button>
+      </div>
+      <p id="project-busy-message">
+      </p>
+      <p class="notice">继续会停止当前场景的口播、推流和录制，再打开所选场景。当前场景的设置会保留。</p>
+      <p id="project-busy-error" class="error" role="alert" hidden="">
+      </p>
+      <div class="project-modal-actions">
+        <button id="project-busy-cancel" class="ghost">保留当前场景</button>
+        <button id="project-force-switch" class="danger">停止当前输出并切换</button>
+      </div>
+    </div>
+  </section>
+  <section id="project-delete-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-delete-title" hidden="">
+    <div class="project-modal">
+      <div class="modal-heading">
+        <h2 id="project-delete-title">删除直播场景</h2>
+        <button id="close-project-delete" class="icon-button" aria-label="取消删除场景">✕</button>
+      </div>
+      <p id="project-delete-description">
+      </p>
+      <p id="project-delete-error" class="error" role="alert" hidden="">
+      </p>
+      <div class="project-modal-actions">
+        <button id="project-delete-cancel" class="ghost">取消</button>
+        <button id="project-delete-confirm" class="danger">删除这个场景</button>
+      </div>
+    </div>
+  </section>
+  <section id="platform-picker" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="platform-picker-title" hidden="">
+    <div class="platform-picker-modal">
+      <div class="modal-heading">
+        <div>
+          <h2 id="platform-picker-title">添加直播平台</h2>
+          <p>同一平台可以添加多个直播间，最多 8 个连接。</p>
+        </div>
+        <button id="close-platform-picker" class="icon-button" aria-label="关闭平台选择">✕</button>
+      </div>
+      <div id="platform-catalog" class="platform-catalog">
+      </div>
+      <p class="helper">所有平台均需自行获得开播权限。弹幕连接和登录状态会在连接后单独核对。</p>
+    </div>
+  </section>
+  <section id="platform-editor" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="platform-editor-title" hidden="">
+    <form id="platform-form" class="platform-editor-modal">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow" id="platform-editor-kind">
+          </p>
+          <h2 id="platform-editor-title">配置直播连接</h2>
+        </div>
+        <button type="button" id="close-platform-editor" class="icon-button" aria-label="关闭平台配置">✕</button>
+      </div>
+      <label>直播名称<input id="platform-name" maxlength="100" required="" placeholder="例如：我的日常直播">
+      </label>
+      <label class="check-label">
+        <input id="platform-enabled" type="checkbox" checked="">参与同时推流</label>
+      <fieldset>
+        <legend>画面与声音 · RTMP / RTMPS 推流</legend>
+        <label>推流服务器地址<input id="platform-rtmp" type="text" placeholder="rtmp://…/live 或 rtmps://…/live" autocomplete="off">
+        </label>
+        <label>推流密钥<input id="platform-key" type="password" autocomplete="new-password" placeholder="平台提供的串流密钥">
+        </label>
+        <label class="check-label" id="platform-clear-key-row" hidden="">
+          <input id="platform-clear-key" type="checkbox">清除已保存的推流密钥</label>
+        <p class="helper">地址与密钥分开保存。已保存的密钥不会回显，留空保持原值；只连接弹幕时可暂不填写推流信息。</p>
+      </fieldset>
+      <fieldset>
+        <legend>观众反馈 · 弹幕连接</legend>
+        <label>直播间链接或房间号<input id="platform-room" autocomplete="off" placeholder="平台官方直播间链接或房间号">
+        </label>
+        <p id="platform-room-help" class="helper">
+        </p>
+        <button type="button" class="primary" id="platform-local-login">本机浏览器登录（推荐）</button><button type="button" id="platform-scan-login">服务器扫码登录</button><p id="platform-login-help" class="helper">本机浏览器可直接操作视频号，再把登录状态同步给服务器。需要本机助手；项目目录运行 npm run browser:local -- --server 当前小云页面地址。也可使用服务器扫码登录。</p>
+      </fieldset>
+      <p id="platform-editor-error" class="error" role="alert" hidden="">
+      </p>
+      <div class="platform-form-actions">
+        <button type="button" id="cancel-platform-editor" class="ghost">取消</button>
+        <button type="submit" class="primary" id="save-platform">保存连接</button>
+      </div>
+    </form>
+  </section>
+  <section id="channels-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="channels-title" hidden="">
+    <div class="channels-modal">
+      <div class="modal-heading">
+        <div>
+          <h2 id="channels-title">连接平台弹幕</h2>
+          <p id="channels-description">浏览器在服务器上运行；按平台要求完成登录。</p>
+        </div>
+        <button id="close-channels" class="icon-button" aria-label="关闭平台连接窗口">✕</button>
+      </div>
+      <div class="channels-toolbar">
+        <span id="channels-status" class="badge">未连接</span>
+        <button id="local-browser-login" class="primary">本机浏览器登录（推荐）</button><button id="connect-channels">连接直播间</button>
+        <button id="login-channels">扫码登录</button>
+        <button id="disconnect-channels" class="ghost">断开监听</button>
+        <button id="refresh-channels" class="small-button">刷新画面</button><button id="channels-size-toggle" class="small-button">原尺寸查看</button><button id="channels-scroll-up" class="small-button" hidden>向上滚动</button><button id="channels-scroll-down" class="small-button" hidden>向下滚动</button>
+      </div>
+      <p id="channels-detail" class="helper">
+      </p>
+      <p id="local-browser-help" class="helper" hidden>本机助手会打开正常 Chrome 窗口，扫码和直播设置都可直接操作，完成后点击「同步登录状态到服务器」。助手未启动时，在本机项目目录运行 npm run browser:local -- --server 当前小云页面地址，然后重新点击本机登录。</p>
+      <div id="channels-error" class="error small" hidden="">
+      </div>
+      <div class="channels-frame">
+        <img id="channels-image" alt="平台浏览器的真实页面，可点击控件并使用键盘" tabindex="0" hidden="">
+        <p id="channels-empty">正在准备服务器登录画面，请稍候。画面出现后直接扫码，按页面提示选择账号。</p>
+      </div>
+      <div id="channels-browser-tools" hidden>
+        <p id="channels-control-feedback" class="helper" role="status">直接点击画面中的按钮或输入框。中文标题可在下方输入，再发送到选中的输入框。</p>
+        <div class="channels-input-row"><textarea id="channels-input-text" rows="2" maxlength="10000" placeholder="先点击画面中的标题或其他输入框，再在这里填写文字" aria-label="输入到视频号后台的文字"></textarea><div><label class="checkbox-row"><input id="channels-input-replace" type="checkbox" checked>替换输入框原有文字</label><button id="channels-send-text" type="button">输入到选中位置</button></div></div>
+        <div class="channels-keyboard"><button type="button" data-channel-key="SelectAll">全选</button><button type="button" data-channel-key="Backspace">退格</button><button type="button" data-channel-key="Tab">下一项 Tab</button><button type="button" data-channel-key="Enter">确认 Enter</button><button type="button" data-channel-key="Escape">取消 Esc</button><button type="button" id="channels-upload-image">上传封面 / 图片</button><input id="channels-upload-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden><button type="button" id="channels-read-stream">读取推流信息</button></div>
+        <p class="helper">上传封面：先点击画面中的上传按钮，再点「上传封面 / 图片」选择本机图片（不超过 10MB）。可继续在画面中裁剪、确认。开播后打开推流信息区域，再点「读取推流信息」。</p>
+        <div id="channels-stream-info" hidden><label>服务器地址<input id="channels-stream-url" readonly></label><label>推流码<input id="channels-stream-key" readonly></label><button type="button" id="channels-apply-stream">填入此连接的推流配置</button><span class="helper">读取结果仅在当前弹窗显示；点击填入后保存到此连接。</span></div>
+      </div>
+      <p class="helper">这是服务器浏览器的实时画面。视频号后台支持点击、输入、滚动、选择账号、设置封面和标题及手动开播。关闭弹窗后服务器继续连接；登录状态和真实弹幕分别显示。</p>
+    </div>
+  </section>
+  <footer class="statusbar">
+    <span id="footer-status">正在连接后台</span>
+    <span id="settings-dirty" hidden="">● 有未保存的设置</span>
+    <span class="push-right">Xiaoyun Studio · 云端自主运行</span>
+  </footer>
+  <div id="toast" role="status" hidden="">
+  </div>
+</div>
+<script type="module" src="/app.mjs">
+</script>
+</body>
+</html>

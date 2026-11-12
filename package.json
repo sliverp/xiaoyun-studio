@@ -12,7 +12,18 @@
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
     "test:media": "node scripts/media-smoke.mjs",
-    "migrate": "node scripts/migrate.mjs"
+    "test:ux": "node scripts/workspace-smoke.mjs",
+    "test:audio": "node scripts/audio-continuity-smoke.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "test:login-ui": "node scripts/remote-login-ui-smoke.mjs",
+    "browser:local": "node scripts/local-browser-helper.mjs",
+    "test:session": "node scripts/browser-session-smoke.mjs",
+    "test:multi-wechat": "node scripts/multi-wechat-smoke.mjs",
+    "test:chat-recovery": "node scripts/channels-watchdog-smoke.mjs",
+    "test:helper-ui": "node scripts/local-helper-ui-smoke.mjs",
+    "test:workspace-login": "node scripts/local-workspace-smoke.mjs",
+    "test:browser-lifecycle": "node scripts/local-browser-lifecycle-smoke.mjs",
+    "test:presentation-preview": "node scripts/presentation-preview-smoke.mjs"
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0",

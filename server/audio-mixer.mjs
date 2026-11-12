@@ -1,11 +1,14 @@
 import {spawn} from 'node:child_process'
 import {basename} from 'node:path'
+import {performance} from 'node:perf_hooks'
 
 export const SAMPLE_RATE=48000
 export const CHANNELS=2
 export const FRAME_SAMPLES=960
 export const FRAME_BYTES=FRAME_SAMPLES*CHANNELS*2
 const HIGH_WATER=1024*1024
+const FRAME_MS=FRAME_SAMPLES/SAMPLE_RATE*1000
+const MAX_CATCHUP_FRAMES=10
 
 /** Decode a local asset to a bounded PCM queue; pausing consumption also pauses the child pipe. */
 export class PcmSource {
@@ -33,16 +36,29 @@ export class PcmSource {
 
 /** Mix continuous PCM frames, resolve speech only after consumption, and duck BGM beneath speech. */
 export class AudioMixer {
-  constructor({ffmpeg,onPcm=()=>{},canOutput=()=>true,onMeter=()=>{}}){
+  constructor({ffmpeg,onPcm=()=>{},canOutput=()=>true,onMeter=()=>{},now=()=>performance.now()}){
     this.ffmpeg=ffmpeg;this.onPcm=onPcm;this.canOutput=canOutput;this.onMeter=onMeter;this.queue=[];this.bgm=null;this.paused=false;this.closed=false;this.samples=0;this.tickCount=0;this.volume=.12;this.ducking=.25;this.meter={rms:0,voiceRms:0,bgmRms:0}
-    this.timer=setInterval(()=>this.tick(),20)
+    this.now=now;this.clockOrigin=now();this.clockFrames=0;this.musicGain=0;this.bgmPath=null
+    this.timer=setInterval(()=>this.pump(),10)
   }
-  play(path,{signal}={}){
+  /** Follow elapsed monotonic time; timer delays must not permanently slow the PCM stream. */
+  pump(){
+    if(this.closed)return
+    const now=this.now()
+    if(!this.canOutput()){this.clockOrigin=now;this.clockFrames=0;return}
+    let due=Math.floor(Math.max(0,now-this.clockOrigin)/FRAME_MS)-this.clockFrames
+    if(due>MAX_CATCHUP_FRAMES){due=MAX_CATCHUP_FRAMES;this.clockOrigin=now-due*FRAME_MS;this.clockFrames=0}
+    for(let frame=0;frame<due&&!this.closed;frame++){
+      if(!this.canOutput()){this.clockOrigin=now;this.clockFrames=0;break}
+      this.tick();this.clockFrames++
+    }
+  }
+  play(path,{signal,onStart}={}){
     if(this.closed)return Promise.reject(new Error('音频引擎已关闭'))
     if(signal?.aborted)return Promise.reject(signal.reason||new DOMException('已取消','AbortError'))
     if(this.queue.length>=16)return Promise.reject(new Error('语音队列已满，请稍后重试'))
     return new Promise((resolve,reject)=>{
-      const entry={source:null,resolve,reject,signal,abort:null,path}
+      const entry={source:null,resolve,reject,signal,abort:null,path,onStart,started:false}
       const failed=error=>{const index=this.queue.indexOf(entry);if(index>=0){this.queue.splice(index,1);entry.source?.close();this.release(entry);reject(error)}}
       entry.source=new PcmSource(this.ffmpeg,path,{onError:failed})
       entry.abort=()=>failed(signal.reason||new DOMException('已取消','AbortError'))
@@ -51,18 +67,21 @@ export class AudioMixer {
   }
   release(entry){entry.signal?.removeEventListener('abort',entry.abort)}
   setBgm(path,{volume=.12,ducking=.25}={}){
-    this.bgm?.close();this.bgm=null
     this.volume=Math.max(0,Math.min(1,Number(volume)||0));this.ducking=Math.max(0,Math.min(1,Number(ducking)||0))
-    if(path)this.bgm=new PcmSource(this.ffmpeg,path,{loop:true,onError:()=>{this.bgm?.close();this.bgm=null}})
+    if(this.bgmPath===(path||null)&&this.bgm)return
+    this.bgm?.close();this.bgm=null;this.bgmPath=path||null;this.musicGain=0
+    if(path){const source=new PcmSource(this.ffmpeg,path,{loop:true,onError:()=>{if(this.bgm===source){source.close();this.bgm=null;this.bgmPath=null}}});this.bgm=source}
   }
   tick(){
     if(this.closed||!this.canOutput())return
     const current=this.queue[0]
     let voice={buffer:Buffer.alloc(FRAME_BYTES),used:0,done:false},music={buffer:Buffer.alloc(FRAME_BYTES),used:0}
     if(!this.paused){if(current)voice=current.source.read(FRAME_BYTES);if(this.bgm)music=this.bgm.read(FRAME_BYTES)}
-    const mix=Buffer.alloc(FRAME_BYTES),gain=this.volume*(voice.used?this.ducking:1)
+    if(current&&voice.used&&!current.started){current.started=true;current.onStart?.()}
+    const mix=Buffer.alloc(FRAME_BYTES),gain=this.volume*(voice.used?this.ducking:1),previousGain=this.musicGain
     let voicePower=0,musicPower=0,mixPower=0
-    for(let offset=0;offset<FRAME_BYTES;offset+=2){const speech=voice.buffer.readInt16LE(offset),bgm=music.buffer.readInt16LE(offset)*gain,sample=Math.max(-32768,Math.min(32767,Math.round(speech+bgm)));mix.writeInt16LE(sample,offset);voicePower+=(speech/32768)**2;musicPower+=(bgm/32768)**2;mixPower+=(sample/32768)**2}
+    for(let offset=0;offset<FRAME_BYTES;offset+=2){const smoothGain=previousGain+(gain-previousGain)*Math.floor(offset/(CHANNELS*2))/(FRAME_SAMPLES-1),speech=voice.buffer.readInt16LE(offset),bgm=music.buffer.readInt16LE(offset)*smoothGain,sample=Math.max(-32768,Math.min(32767,Math.round(speech+bgm)));mix.writeInt16LE(sample,offset);voicePower+=(speech/32768)**2;musicPower+=(bgm/32768)**2;mixPower+=(sample/32768)**2}
+    this.musicGain=gain
     this.samples+=FRAME_SAMPLES;this.onPcm(mix)
     if(++this.tickCount%5===0){this.meter={rms:Math.sqrt(mixPower/(FRAME_BYTES/2)),voiceRms:Math.sqrt(voicePower/(FRAME_BYTES/2)),bgmRms:Math.sqrt(musicPower/(FRAME_BYTES/2)),paused:this.paused,queued:this.queue.length,seconds:this.samples/SAMPLE_RATE};this.onMeter(this.meter)}
     if(current&&!this.paused&&voice.done){this.queue.shift();current.source.close();this.release(current);current.resolve({played:true})}

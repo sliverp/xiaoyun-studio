@@ -30,6 +30,7 @@ try{
  console.error('pdf-smoke: authenticated initial PDF render')
  const first=await engine.openPresentation('/assets/uploads/test.pdf')
  assert.equal(first.pageNumber,1);assert.equal(first.pageCount,2);assert.match(first.text,/First page: cloud agent/)
+ const beforeReadAhead=engine.getSlideFrame(),future=await engine.readSlideAt(2);assert.match(future.text,/Second page/);assert.equal(engine.slide.pageNumber,1);assert.equal(engine.getSlideFrame(),beforeReadAhead);assert.equal(await engine.deckPage.$eval('#counter',e=>e.dataset.slideNumber),'1')
  console.error('pdf-smoke: native async next-page render')
  const second=await engine.nextSlide();assert.equal(second.pageNumber,2);assert.match(second.text,/Second page: headless broadcast/)
  console.error('pdf-smoke: native first-page render')

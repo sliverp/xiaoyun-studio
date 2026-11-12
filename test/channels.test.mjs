@@ -5,8 +5,38 @@ import {EventEmitter} from 'node:events'
 import {runInNewContext} from 'node:vm'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {ChannelsCollector,loginClickAllowed,readChannelsLoginState} from '../server/channels.mjs'
+import {ChannelsCollector,channelsPointAllowed,readChannelsLoginState,channelsAddressAllowed,channelsLoginFrameAllowed} from '../server/channels.mjs'
 import {isChannelsLiveResponse,isChannelsMessageResponse,parseChannelNumber,extractChannelsComments,extractChannelsMetrics,extractChannelsDomMetrics} from '../server/channels-parser.mjs'
+import {coverExtension,CHANNEL_KEYS,readChannelsPageStreamInfo} from '../server/channels-controls.mjs'
+
+test('stream fields are read from official embedded frames without mixing partial credentials or reading other origins',async()=>{
+ const frame=(url,value)=>({url:()=>url,evaluate:async()=>value})
+ const page={frames:()=>[frame('https://channels.weixin.qq.com/platform/live/liveBuild',{rtmpUrl:'rtmp://wrong.invalid/live',streamKey:''}),frame('https://untrusted.invalid/',{rtmpUrl:'rtmp://evil.invalid/live',streamKey:'wrong'}),frame('https://channels.weixin.qq.com/micro/live/liveBuild',{rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-own-key'})]}
+ assert.deepEqual(await readChannelsPageStreamInfo(page),{rtmpUrl:'rtmp://fixture.invalid/live',streamKey:'fixture-own-key'})
+ page.frames=()=>[frame('https://channels.weixin.qq.com/platform/live/liveBuild',{rtmpUrl:'rtmp://wrong.invalid/live',streamKey:''}),frame('https://channels.weixin.qq.com/micro/live/liveBuild',{rtmpUrl:'',streamKey:'fixture-own-key'})]
+ assert.deepEqual(await readChannelsPageStreamInfo(page),{rtmpUrl:'',streamKey:'fixture-own-key'})
+})
+
+test('connect opens current live management while login preserves account selection and the existing session',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'studio-live-navigation-')),collector=new ChannelsCollector({dataDir:dir})
+ t.after(async()=>{await collector.close();await rm(dir,{recursive:true,force:true})})
+ let path='/platform',loginRequired=false,gotos=0
+ const page=new EventEmitter();Object.assign(page,{isClosed:()=>false,url:()=> 'https://channels.weixin.qq.com'+path,mainFrame:()=>page,evaluate:async fn=>fn===readChannelsLoginState?{path,loginRequired,accountSelectionRequired:loginRequired}:[],screenshot:async()=>Buffer.from('frame'),goto:async address=>{path=new URL(address).pathname;gotos++}})
+ collector.page=page;collector.wanted=true;collector.browser={connected:true,close:async()=>{}};collector.lastDomAt=Date.now()
+ await collector.capture();assert.equal(collector.status().state,'backend-home');assert.equal(collector.status().livePageReady,false)
+ await collector.connect({openLiveRoom:false});assert.equal(gotos,0)
+ await collector.connect();assert.equal(gotos,1);assert.equal(path,'/platform/live/liveBuild');assert.equal(collector.status().livePageReady,true)
+ await collector.connect();assert.equal(gotos,1,'already connected live management must not be reloaded')
+ path='/platform/live/home';await collector.capture();assert.equal(collector.status().livePageReady,false);assert.equal(collector.status().state,'backend-home')
+ await collector.connect();assert.equal(gotos,2);assert.equal(path,'/platform/live/liveBuild','the landing page must enter the message-polling room')
+ path='/platform/account/choose';loginRequired=true;await collector.connect();assert.equal(gotos,2,'account selection must not be interrupted by navigation')
+})
+test('cover uploads check image signatures and limits, and remote keys exclude browser/system shortcuts',()=>{
+ assert.equal(coverExtension(Buffer.from([137,80,78,71,13,10,26,10])),'.png')
+ assert.equal(coverExtension(Buffer.from([255,216,255])),'.jpg')
+ for(const value of [Buffer.from('<html>'),Buffer.alloc(0),Buffer.alloc(10*1024*1024+1)])assert.throws(()=>coverExtension(value))
+ assert.ok(CHANNEL_KEYS.has('Enter'));assert.ok(CHANNEL_KEYS.has('SelectAll'));assert.equal(CHANNEL_KEYS.has('F12'),false)
+})
 
 test('only official live routes are inspected, including backend path prefixes',()=>{
  for(const prefix of ['', '/cgi-bin', '/micro/live/cgi-bin']){
@@ -23,6 +53,26 @@ test('official login wording and login.html remain login-required while the app 
  assert.equal(read('/login.html','').loginRequired,true)
  assert.equal(read('/platform/login','').loginRequired,true)
  assert.equal(read('/platform/live/liveBuild','直播数据\n当前在线人数 12').loginRequired,false)
+})
+test('account selection remains part of login while the backend switch menu alone does not require another scan',()=>{
+ const read=text=>runInNewContext('('+readChannelsLoginState.toString()+')()',{document:{body:{innerText:text}},location:{pathname:'/platform/live/liveBuild'}})
+ assert.equal(read('请选择视频号身份\n管理员\n子用户：运营同学').accountSelectionRequired,true)
+ assert.equal(read('直播数据\n当前在线人数 12\n切换账号').accountSelectionRequired,false)
+ assert.equal(channelsPointAllowed({x:50,y:50}),true)
+ for(const address of ['https://user:password@channels.weixin.qq.com/','http://channels.weixin.qq.com/','https://channels.weixin.qq.com.evil.test/','file:///etc/passwd'])assert.equal(channelsAddressAllowed(address),false)
+ assert.equal(channelsLoginFrameAllowed('https://open.weixin.qq.com/connect/qrconnect?state=fixture'),true)
+ assert.equal(channelsAddressAllowed('https://open.weixin.qq.com/connect/qrconnect'),false)
+ for(const address of ['https://open.weixin.qq.com/other','https://open.weixin.qq.com.evil.test/connect/qrconnect','http://open.weixin.qq.com/connect/qrconnect','https://user@open.weixin.qq.com/connect/qrconnect'])assert.equal(channelsLoginFrameAllowed(address),false)
+})
+test('a new official account window becomes the active remote view and closing it returns to the prior backend',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'studio-account-window-')),collector=new ChannelsCollector({dataDir:dir})
+ t.after(async()=>{await collector.close();await rm(dir,{recursive:true,force:true})})
+ const make=path=>{const page=new EventEmitter();page.url=()=> 'https://channels.weixin.qq.com'+path;page.isClosed=()=>false;page.mainFrame=()=>page;return page}
+ collector.wanted=true;collector.generation=1
+ const main=make('/platform/live/liveBuild'),popup=make('/platform/account/choose')
+ await collector._attach(main,1);collector.page=main;await collector._attach(popup,1);assert.equal(collector.page,popup)
+ main.emit('framenavigated',main);assert.equal(collector.page,popup,'background navigation must not steal the account selection view')
+ popup.emit('close');assert.equal(collector.page,main);assert.equal(collector.frame,null)
 })
 
 test('message extraction omits cookies, login headers and private viewer account ids',()=>{
@@ -41,13 +91,13 @@ test('missing counters stay absent, zero stays zero, rounded values retain prove
  assert.equal(dom.fields.heat.value,26000);assert.equal(dom.fields.heat.approximate,true);assert.equal(dom.fields.onlineUsers,undefined)
 })
 
-test('constructor and status never launch a browser, and login clicks cannot operate live controls',async t=>{
+test('constructor and status never launch a browser, and controls require an owned official page',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'studio-channels-'));t.after(()=>rm(dir,{recursive:true,force:true}))
  let launched=0
  const collector=new ChannelsCollector({dataDir:dir,launch:async()=>{launched++;throw new Error('not called')}})
  assert.equal(launched,0);assert.equal(collector.status().state,'disconnected');assert.equal(collector.getFrame(),null)
- await assert.rejects(collector.click({x:20,y:20}),/只能在扫码登录页/)
- assert.equal(loginClickAllowed('receiving',{x:10,y:10}),false);assert.equal(loginClickAllowed('login-required',{x:1100,y:10}),false);assert.equal(loginClickAllowed('login-required',{x:10,y:10}),true)
+ await assert.rejects(collector.click({x:20,y:20}),/只能在视频号官方后台/)
+ assert.equal(channelsPointAllowed({x:-1,y:10}),false);assert.equal(channelsPointAllowed({x:1100,y:10}),false);assert.equal(channelsPointAllowed({x:10,y:10}),true)
  await collector.close();assert.equal(launched,0)
 })
 

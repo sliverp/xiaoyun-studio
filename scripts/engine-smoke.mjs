@@ -27,6 +27,7 @@ try{
  await engine.initialize();assert.ok(engine.getFrame()?.length>1000)
  console.error('engine-smoke: open and read HTML deck')
  await engine.openPresentation('http://127.0.0.1:18359/deck');assert.equal((await engine.readSlide()).pageNumber,1)
+ const beforeReadAhead=engine.getSlideFrame(),future=await engine.readSlideAt(2);assert.match(future.text,/第二页/);assert.equal(engine.slide.pageNumber,1);assert.equal(engine.getSlideFrame(),beforeReadAhead);assert.equal(await engine.deckPage.$eval('#counter',e=>e.dataset.slideNumber),'1')
  console.error('engine-smoke: next and first page while composite capture runs')
  assert.equal((await engine.nextSlide()).pageNumber,2);assert.equal((await engine.firstSlide()).pageNumber,1)
  console.error('engine-smoke: simultaneous local RTMP and recording')
@@ -34,7 +35,20 @@ try{
  const started=performance.now(),play=engine.playAudio(wave)
  await delay(300);engine.pauseAudio();await delay(350);engine.resumeAudio();await play
  const consumed=performance.now()-started;assert.ok(consumed>=2400,'paused PCM should not complete before audio consumption')
- await delay(1500);await engine.stopOutput();await Promise.race([receivedClosed,delay(5000)])
+ console.error('engine-smoke: recover a closed tab and one failed restart while local RTMP and recording continue')
+ await engine.nextSlide();assert.equal((await engine.readSlide()).pageNumber,2)
+ const liveBrowser=engine.browser,encoderProcess=engine.output,launch=engine.launch;let failNextRestart=true,injectedFailures=0
+ engine.launch=async options=>{
+  const browser=await launch(options)
+  if(failNextRestart){failNextRestart=false;const [page]=await browser.pages();page.setBypassServiceWorker=async()=>{injectedFailures++;await page.close().catch(()=>{});throw new Error('Protocol error (Network.setBypassServiceWorker): Session closed. Most likely the page has been closed.')}}
+  return browser
+ }
+ await engine.programPage.close()
+ const liveRecoveryLimit=Date.now()+30000
+ while(Date.now()<liveRecoveryLimit){await delay(200);if(engine.status().ready&&!engine.status().browserRecovering&&engine.slide.pageNumber===2&&engine.browser!==liveBrowser)break}
+ assert.equal(injectedFailures,1);assert.equal(engine.status().ready,true);assert.equal(engine.status().browserRecovering,false);assert.equal(engine.slide.pageNumber,2)
+ assert.equal(engine.output,encoderProcess,'render recovery must preserve the existing encoder');assert.equal(engine.status().output.running,true)
+ await delay(2500);await engine.stopOutput();await Promise.race([receivedClosed,delay(5000)])
  const mp4=join(directory,'recordings',engine.status().output.recording?.name||engine.status().output.recordingFile||'')
  assert.ok(existsSync(mp4)&&statSync(mp4).size>2000,'MP4 recording must contain encoded frames')
  assert.ok(existsSync(received)&&statSync(received).size>2000,'local RTMP receiver must receive actual media')
@@ -47,7 +61,7 @@ try{
  const previousBrowser=engine.browser;previousBrowser.process().kill('SIGKILL')
  const recoveryLimit=Date.now()+15000;while(Date.now()<recoveryLimit){await delay(200);if(engine.status().ready&&!engine.status().browserRecovering&&engine.status().slide.pageNumber===2&&engine.browser!==previousBrowser)break}
  assert.equal(engine.status().ready,true);assert.equal(engine.status().slide.pageNumber,2);assert.notEqual(engine.browser,previousBrowser)
- const result={browserRecoveryPreservedPage:true,passed:true,artifactDirectory:directory,actualRtmpReceivedBytes:statSync(received).size,mp4Bytes:statSync(mp4).size,decodedAudioRms:rms,playbackWithPauseMs:Math.round(consumed),encoderFrames:last.output.encodedFrames,captureFps:last.captureFps}
+ const result={browserRecoveryPreservedPage:true,tabCrashPreservedEncoder:true,failedRestartRetried:true,recordingAndLocalRtmpSurvived:true,passed:true,artifactDirectory:directory,actualRtmpReceivedBytes:statSync(received).size,mp4Bytes:statSync(mp4).size,decodedAudioRms:rms,playbackWithPauseMs:Math.round(consumed),encoderFrames:last.output.encodedFrames,captureFps:last.captureFps}
  writeFileSync(join(directory,'verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2))
 }catch(error){console.error('Real smoke failed:',error.message);console.error('Encoder:',JSON.stringify(engine.status().output));console.error('Receiver:',receiverError.slice(-1200));throw error}
 finally{await engine.close();receiver.kill('SIGTERM');server.close()}

@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import puppeteer from 'puppeteer-core'
-import { ChannelsCollector } from './channels.mjs'
+import { ChannelsCollector,channelsLoginFrames } from './channels.mjs'
 import { decodePlatformChat, isPlatformChatSocket } from './platform-chat-parser.mjs'
 import { browserDeadline, closePlatformBrowser } from './platform-browser.mjs'
 import { normalizeRoomUrl, CONNECTION_ID } from './platform-catalog.mjs'
@@ -37,8 +37,8 @@ export function platformNavigationAllowed(platform,address){
 export function readPlatformLoginState(platform){
  const text=document.body?.innerText||'',visible=element=>{const style=getComputedStyle(element);return style.display!=='none'&&style.visibility!=='hidden'&&element.getClientRects().length>0}
  const panels=[...document.querySelectorAll('[role="dialog"],[class*="login-panel"],[class*="loginPanel"],[class*="login-modal"],[class*="loginModal"],[class*="passport"],.bili-mini-login-wrapper')].filter(visible)
- const loginText=/扫码登录|二维码登录|登录视频号助手|请使用.{0,12}扫码|请用.{0,12}扫码|微信扫码登录|登录后.{0,10}(?:观看|查看|互动)/
- const dedicatedLogin=/\/login(?:[./]|$)/.test(location.pathname)
+ const loginText=/扫码登录|二维码登录|登录视频号助手|请使用.{0,12}扫码|请用.{0,12}扫码|微信扫码登录|使用微信扫一扫登录|登录后.{0,10}(?:观看|查看|互动)/
+ const dedicatedLogin=/\/login(?:[./]|$)/.test(location.pathname)||(platform==='wechat'&&location.hostname==='open.weixin.qq.com'&&location.pathname==='/connect/qrconnect')
  const loginPanelVisible=dedicatedLogin||panels.some(element=>/登录/.test(element.innerText||''))||[...document.querySelectorAll('input[type="password"],input[type="tel"],input[placeholder*="手机号"],input[placeholder*="验证码"]')].some(visible)
  const loginVisible=loginPanelVisible||loginText.test(text)
  const qrGraphics={loaded:0,pending:0,unreadable:0,patterns:0}
@@ -89,32 +89,32 @@ export function allowedPlatformLoginClick({x,y}){
 }
 
 export class PlatformChatCollector {
- constructor({connection,dataDir,onComments=()=>{},onMetrics=()=>{},onStatus=()=>{},launch=options=>puppeteer.launch(options)}){
+ constructor({connection,dataDir,onComments=()=>{},onMetrics=()=>{},onStatus=()=>{},launch=options=>puppeteer.launch(options),expectLive=()=>false}){
   if(!connection||!CONNECTION_ID.test(connection.id||'')||!Object.hasOwn(PLATFORMS,connection.platform))throw new Error('平台连接信息无效')
   this.connection={id:connection.id,platform:connection.platform,name:String(connection.name||PLATFORMS[connection.platform].name).slice(0,100),roomUrl:normalizeRoomUrl(connection.platform,connection.roomUrl)}
   this.definition=PLATFORMS[this.connection.platform];this.dataDir=join(resolve(dataDir),'platforms',this.connection.id);this.onComments=onComments;this.onMetrics=onMetrics;this.onStatus=onStatus;this.launch=launch
   this.browser=null;this.page=null;this.frame=null;this.timer=null;this.pending=null;this.wanted=false;this.closed=false;this.generation=0;this.capturing=false;this.navigating=false;this.loginRequested=false;this.mode='room';this.authenticated=false
   this.state='disconnected';this.reason='等待连接';this.error='';this.loginRequired=false;this.qrVisible=false;this.messageResponses=0;this.commentCount=0;this.lastMessageAt=0;this.lastDataAt=0;this.lastCommentAt=0;this.lastMetricsAt=0;this.capturedAt=0;this.pagePath='';this.fields={};this.platformState='unknown';this.verificationRequired=false;this.captureFailed=false;this.decodeWarning=''
   this.delegateQrVisible=null;this.loginPage={};this.attached=new WeakSet();this.sessions=new Set();this.seen=new Set();this.pendingFrames=0;this.reconnects=0;this.reconnectTimer=null;this.lastDeliveryAt=0
-  if(this.connection.platform==='wechat')this.delegate=new ChannelsCollector({dataDir:this.dataDir,launch,onComments:items=>this.onComments(items),onMetrics:value=>this.onMetrics(value),onStatus:()=>this.emit()})
+  if(this.connection.platform==='wechat')this.delegate=new ChannelsCollector({dataDir:this.dataDir,launch,expectLive,onComments:items=>this.onComments(items),onMetrics:value=>this.onMetrics(value),onStatus:()=>this.emit()})
  }
  status(){
   const base=this.delegate?.status()||{state:this.state,label:LABELS[this.state],reason:this.reason,browserOpen:Boolean(this.browser?.connected&&visiblePage(this.page)),loginRequired:this.loginRequired,authenticated:this.authenticated,qrVisible:this.qrVisible,messageResponses:this.messageResponses,commentCount:this.commentCount,lastMessageAt:this.lastMessageAt,lastCommentAt:this.lastCommentAt,lastMetricsAt:this.lastMetricsAt,error:this.error,capturedAt:this.capturedAt,pagePath:this.pagePath,width:WIDTH,height:HEIGHT,platformState:this.platformState,reconnects:this.reconnects,metrics:Object.fromEntries(Object.entries(this.fields).filter(([,entry])=>Date.now()-entry.at<=30000))}
-  return {...base,...(this.delegate?{qrVisible:this.delegateQrVisible}:{}),loginPage:this.loginPage,connectionId:this.connection.id,platform:this.connection.platform,name:this.connection.name,roomUrl:this.connection.roomUrl,capability:{mode:this.delegate?'official-backend-responses':'passive-browser-cdp',readOnly:true,qrLogin:true,metrics:this.definition.metrics,liveAccountVerified:false,note:this.delegate?'需要扫码进入实际直播后台；公开后台响应可能调整。':'按平台实际返回读取弹幕；匿名昵称可能打码，验证码或平台限制需要操作者处理。'}}
+  return {...base,...(this.delegate?{qrVisible:this.delegateQrVisible}:{}),loginPage:this.loginPage,connectionId:this.connection.id,platform:this.connection.platform,name:this.connection.name,roomUrl:this.connection.roomUrl,capability:{mode:this.delegate?'official-backend-responses':'passive-browser-cdp',readOnly:!this.delegate,operatorControls:Boolean(this.delegate),qrLogin:true,metrics:this.definition.metrics,liveAccountVerified:false,note:this.delegate?'需要扫码进入实际直播后台；公开后台响应可能调整。':'按平台实际返回读取弹幕；匿名昵称可能打码，验证码或平台限制需要操作者处理。'}}
  }
  getFrame(){return this.delegate?this.delegate.getFrame():this.frame}
  emit(){this.onStatus(this.status())}
  _state(state,reason=this.reason){this.state=state;this.reason=reason;this.emit()}
  async connect(){
   if(this.closed)throw new Error('平台采集器已关闭')
-  if(this.delegate){await this.delegate.connect();await this._probeDelegateQr();return this.status()}
+  if(this.delegate){await this.delegate.connect({openLiveRoom:true});await this._probeDelegateQr();return this.status()}
   if(this.captureFailed){await this.disconnect();this.captureFailed=false}
   this.mode='room';this.loginRequested=false;this.reconnects=0;this.wanted=true
   return this._open()
  }
  async login(){
   if(this.closed)throw new Error('平台采集器已关闭')
-  if(this.delegate){await this.delegate.connect();await this._probeDelegateQr();return this.status()}
+  if(this.delegate){await this.delegate.connect({openLiveRoom:false});await this._probeDelegateQr();return this.status()}
   if(this.captureFailed){await this.disconnect();this.captureFailed=false}
   this.mode='login';this.loginRequested=true;this.reconnects=0;this.wanted=true
   return this._open()
@@ -224,8 +224,8 @@ export class PlatformChatCollector {
  async _probeDelegateQr(){
   const page=this.delegate?.page
   if(this.closed||!page||page.isClosed()||!platformNavigationAllowed('wechat',page.url?.()||''))return
-  const state=await browserDeadline(page.evaluate(readPlatformLoginState,'wechat'),10000,'视频号登录状态读取超时')
-  if(!this.closed&&this.delegate.page===page){this.delegateQrVisible=Boolean(state.qrVisible);this.loginPage={panelVisible:Boolean(state.loginPanelVisible),verificationRequired:Boolean(state.verificationRequired),qrGraphics:state.qrGraphics};this.emit()}
+  const states=await browserDeadline((async()=>{const values=[];for(const frame of await channelsLoginFrames(page))values.push(await frame.evaluate(readPlatformLoginState,'wechat'));return values})(),10000,'视频号登录状态读取超时')
+  if(!this.closed&&this.delegate.page===page){this.delegateQrVisible=states.some(state=>state.qrVisible);this.loginPage={panelVisible:states.some(state=>state.loginPanelVisible),verificationRequired:states.some(state=>state.verificationRequired),qrGraphics:Object.fromEntries(['loaded','pending','unreadable','patterns'].map(key=>[key,states.reduce((sum,state)=>sum+(state.qrGraphics?.[key]||0),0)]))};this.emit()}
  }
  async _isAuthenticated(){
   if(!this.browser?.connected)return false
@@ -288,13 +288,20 @@ export class PlatformChatCollector {
   finally{this.capturing=false}
  }
  async click({x,y}){
-  if(this.delegate){await this.delegate.click({x,y});return this.status()}
+  if(this.delegate){await this.delegate.click({x,y});await this._probeDelegateQr();return this.status()}
   if(!this.wanted||!this.loginRequired||!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=WIDTH||y>=HEIGHT||!visiblePage(this.page)||!platformNavigationAllowed(this.connection.platform,this.page.url()))throw new Error('只能在官方扫码登录页面点击有效的登录或二维码控件')
   const generation=this.generation,allowed=await this._loginClickAllowed(this.page,{x,y})
   if(!allowed)throw new Error('该位置不是允许的登录或二维码刷新控件')
   if(generation!==this.generation||!this.wanted)return this.status()
   await this.page.mouse.click(x,y);await this.capture();return this.status()
  }
+ async scroll(point){if(!this.delegate)throw new Error('此平台暂不支持远程滚动');await this.delegate.scroll(point);return this.status()}
+ async type(value){if(!this.delegate)throw new Error('此平台暂不支持后台文字输入');return this.delegate.type(value)}
+ async drag(value){if(!this.delegate)throw new Error('此平台暂不支持后台拖动');return this.delegate.drag(value)}
+ async key(value){if(!this.delegate)throw new Error('此平台暂不支持后台按键');return this.delegate.key(value)}
+ async upload(bytes){if(!this.delegate)throw new Error('此平台暂不支持后台图片上传');return this.delegate.upload(bytes)}
+ async streamInfo(){if(!this.delegate)throw new Error('此平台暂不支持读取推流信息');return this.delegate.streamInfo()}
+ async importSession(value){if(!this.delegate)throw new Error('本机登录同步目前支持视频号');this.delegate=await this.delegate.importSession(value);await this._probeDelegateQr();this.emit();return this.status()}
  async _loginClickAllowed(page,point){
   let frame=page.mainFrame(),local=point
   for(let depth=0;depth<5;depth++){

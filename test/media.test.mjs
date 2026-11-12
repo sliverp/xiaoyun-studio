@@ -32,12 +32,41 @@ test('speech completes only after its last PCM frame is consumed, and pause does
  mixer.queue.push(entry);mixer.pause();mixer.tick();assert.equal(reads,0);assert.equal(completed,false);assert.equal(frames[0].readInt16LE(0),0)
  mixer.resume();mixer.tick();assert.equal(reads,1);assert.equal(completed,true);assert.equal(frames[1].readInt16LE(0),1000)
 })
-test('BGM is ducked under real speech, mixed without clipping and restored afterward',t=>{
+test('voice-start notifications follow actual PCM consumption rather than decode or queue order',t=>{
+ const {mixer}=controlledMixer(t),started=[];let available=false
+ const entry={source:{read:()=>({buffer:available?sample(1000):Buffer.alloc(FRAME_BYTES),used:available?FRAME_BYTES:0,done:false}),close(){}},onStart:()=>started.push('first'),resolve(){},reject(){}}
+ mixer.queue.push(entry);mixer.tick();assert.deepEqual(started,[])
+ available=true;mixer.pause();mixer.tick();assert.deepEqual(started,[])
+ mixer.resume();mixer.tick();mixer.tick();assert.deepEqual(started,['first'])
+})
+test('BGM ducking and restoration ramp smoothly without clipping',t=>{
  const {mixer,frames}=controlledMixer(t)
  mixer.volume=.5;mixer.ducking=.2;mixer.bgm={read:()=>({buffer:sample(10000),used:FRAME_BYTES}),close(){}}
  mixer.queue.push({source:{read:()=>({buffer:sample(30000),used:FRAME_BYTES,done:true}),close(){}},resolve(){},reject(){}})
- mixer.tick();assert.equal(frames[0].readInt16LE(0),31000)
- mixer.tick();assert.equal(frames[1].readInt16LE(0),5000)
+ mixer.tick();assert.equal(frames[0].readInt16LE(0),30000);assert.equal(frames[0].readInt16LE(FRAME_BYTES-2),31000)
+ mixer.tick();assert.equal(frames[1].readInt16LE(0),1000);assert.equal(frames[1].readInt16LE(FRAME_BYTES-2),5000)
+ for(let at=4;at<FRAME_BYTES;at+=4)assert.ok(Math.abs(frames[1].readInt16LE(at)-frames[1].readInt16LE(at-4))<=5)
+})
+test('PCM clock catches up short timer stalls instead of accumulating playback gaps',t=>{
+ let now=0;const frames=[],mixer=new AudioMixer({ffmpeg:'not-spawned',now:()=>now,onPcm:frame=>frames.push(frame)});clearInterval(mixer.timer);t.after(()=>mixer.close())
+ for(now=23;now<=5014;now+=23)mixer.pump()
+ assert.equal(frames.length,Math.floor((now-23)/20));assert.ok((now-23)-mixer.samples/48<20)
+ now+=85;mixer.pump();assert.ok(now-mixer.samples/48<20)
+})
+test('backpressure and long suspension cannot fast-forward or create an unbounded audio burst',t=>{
+ let now=0,allowed=true;const frames=[],mixer=new AudioMixer({ffmpeg:'not-spawned',now:()=>now,canOutput:()=>allowed,onPcm:frame=>frames.push(frame)});clearInterval(mixer.timer);t.after(()=>mixer.close())
+ now=20;mixer.pump();assert.equal(frames.length,1)
+ allowed=false;now=10020;mixer.pump();assert.equal(frames.length,1)
+ allowed=true;now=10040;mixer.pump();assert.equal(frames.length,2)
+ now=20040;mixer.pump();assert.equal(frames.length,12)
+ now=20060;mixer.pump();assert.equal(frames.length,13)
+})
+test('saving unchanged BGM or changing volume keeps the running decoder and playback position',t=>{
+ const {mixer}=controlledMixer(t);let closes=0
+ const source={close(){closes++}};mixer.bgm=source;mixer.bgmPath='/fixture/music.mp3';mixer.musicGain=.12
+ mixer.setBgm('/fixture/music.mp3',{volume:.3,ducking:.2})
+ assert.equal(mixer.bgm,source);assert.equal(closes,0);assert.equal(mixer.musicGain,.12);assert.equal(mixer.volume,.3)
+ mixer.setBgm(null);assert.equal(closes,1);assert.equal(mixer.bgm,null)
 })
 test('output backpressure retains voice position and immediate stop settles waiting speech',t=>{
  const {mixer}=controlledMixer(t);let reads=0,rejected=false
@@ -105,13 +134,15 @@ test('closing still releases the mixer and browser when output teardown rejects'
  await assert.rejects(engine.close(),error=>error===failure)
 })
 test('close callers wait until a delayed browser launch releases its profile',async t=>{
- const dataDir=mkdtempSync(join(tmpdir(),'studio-late-browser-'));let finishLaunch,finishBrowserClose,enteredClose,firstClosed=false,secondClosed=false,closeCalls=0,profileHeld=false
+ const dataDir=mkdtempSync(join(tmpdir(),'studio-late-browser-'));let finishLaunch,finishBrowserClose,enteredClose,enteredLaunch,firstClosed=false,secondClosed=false,closeCalls=0,profileHeld=false
  const launched=new Promise(resolve=>{finishLaunch=resolve}),browserClosed=new Promise(resolve=>{finishBrowserClose=resolve}),closeEntered=new Promise(resolve=>{enteredClose=resolve})
+ const launchEntered=new Promise(resolve=>{enteredLaunch=resolve})
  const browser={async close(){closeCalls++;enteredClose();await browserClosed;profileHeld=false}}
- const engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}}),launch:()=>launched})
+ const engine=new MediaEngine({dataDir,baseUrl:'http://localhost:18359',renderToken:'private-render',getSettings:()=>({output:{fps:15}}),launch:()=>{enteredLaunch();return launched}})
  engine.tools={ready:true,chromium:{path:'fixture-chromium'},ffmpeg:{path:null,available:false}}
  t.after(()=>rmSync(dataDir,{recursive:true,force:true}))
- const initializing=engine.initialize(),rejected=assert.rejects(initializing,/取消/),first=engine.close().then(()=>{firstClosed=true}),second=engine.close().then(()=>{secondClosed=true})
+ const initializing=engine.initialize(),rejected=assert.rejects(initializing,/取消/);await launchEntered
+ const first=engine.close().then(()=>{firstClosed=true}),second=engine.close().then(()=>{secondClosed=true})
  await Promise.resolve();assert.equal(firstClosed,false);assert.equal(secondClosed,false)
  profileHeld=true;finishLaunch(browser);await closeEntered
  assert.equal(profileHeld,true);assert.equal(firstClosed,false);assert.equal(secondClosed,false)

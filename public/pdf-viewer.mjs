@@ -19,7 +19,7 @@ async function drawPage(number){
  window.studioPdfLoading=false;return true
 }
 function goToPage(number){rendering=rendering.then(()=>drawPage(number)).catch(cause=>{showError(cause);throw cause});window.studioPdfReady=rendering;return rendering}
-window.nextSlide=()=>goToPage(current+1);window.prevSlide=()=>goToPage(current-1);window.studioDeck={goToSlide:number=>goToPage(Number(number))}
+window.nextSlide=()=>goToPage(current+1);window.prevSlide=()=>goToPage(current-1);window.studioDeck={goToSlide:number=>goToPage(Number(number)),readSlide:async number=>{if(!pdf||!Number.isInteger(number)||number<1||number>pdf.numPages)return null;const page=await pdf.getPage(number),content=await page.getTextContent();return {title:'PDF 第 '+number+' 页 · 小云 Studio',text:content.items.map(item=>item.str||'').join(' ').replace(/\s+/g,' ').trim(),notes:''}}}
 previous.addEventListener('click',()=>window.prevSlide().catch(showError));next.addEventListener('click',()=>window.nextSlide().catch(showError))
 addEventListener('keydown',event=>{if(['ArrowRight','PageDown'].includes(event.key)){event.preventDefault();window.nextSlide().catch(showError)}if(['ArrowLeft','PageUp'].includes(event.key)){event.preventDefault();window.prevSlide().catch(showError)}})
 addEventListener('resize',()=>{if(current)goToPage(current).catch(showError)})

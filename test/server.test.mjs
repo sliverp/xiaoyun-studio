@@ -7,6 +7,7 @@ import {Store} from '../server/store.mjs'
 import {Assets} from '../server/assets.mjs'
 import {Auth,checkOrigin} from '../server/auth.mjs'
 import {createStudio} from '../server/http.mjs'
+import {getPersonaPreset} from '../public/personas.mjs'
 const root=resolve(import.meta.dirname,'..')
 function temporary(t){const d=mkdtempSync(join(tmpdir(),'studio-api-'));t.after(()=>rmSync(d,{recursive:true,force:true}));return d}
 function fakeMedia(options){return {options,initialize:async()=>{},getFrame:()=>null,getSlideFrame:()=>null,setBgm(){},stopAudio(){},pauseAudio(){},resumeAudio(){},status:()=>({ready:false,slide:{},output:{active:false,state:'stopped'}}),close:async()=>{}}}
@@ -19,6 +20,18 @@ test('configuration, stream credentials, uploads and the encoder require authent
  assert.equal((await request('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"action":"output.start"}'})).status,401)
  assert.equal((await request('/')).status,200)
 })
+test('persona templates load publicly but applying and editing a saved persona requires administrator access',async t=>{
+ const {app,request,cookie}=await fixture(t)
+ const templates=await request('/personas.mjs');assert.equal(templates.status,200);assert.match(await templates.text(),/带货主播/)
+ const options={method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({patch:{identity:{personaId:'commerce'}}})}
+ assert.equal((await request('/api/config',options)).status,401)
+ const saved=await request('/api/config',{...options,headers:{...options.headers,Cookie:cookie}})
+ assert.equal(saved.status,200)
+ assert.equal((await saved.json()).config.identity.systemPrompt,getPersonaPreset('commerce').prompt)
+ const state=await(await request('/api/state',{headers:{Cookie:cookie}})).json()
+ assert.equal(state.config.identity.personaId,'commerce')
+ assert.equal(app.store.get().identity.systemPrompt,getPersonaPreset('commerce').prompt)
+})
 test('server secrets persist separately and never appear in state, events or errors',async t=>{
  const {app,request,cookie}=await fixture(t),key='fixture-stream-secret-hidden-123456'
  const result=await request('/api/config',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({patch:{identity:{name:'测试主播'}},secrets:{streamKey:key,llmKey:'fixture-model-secret-987654'}})})
@@ -26,6 +39,45 @@ test('server secrets persist separately and never appear in state, events or err
  assert.ok(!readFileSync(app.store.file,'utf8').includes(key))
  assert.ok(readFileSync(app.store.secretFile,'utf8').includes(key))
  assert.equal(app.store.redact('bad '+key),'bad [redacted]')
+})
+test('multiple provider settings preserve private credentials, validate credential sharing, and keep test APIs administrator-only',async t=>{
+ const {app,request,cookie}=await fixture(t)
+ app.providers.test=async(kind,route)=>({kind,route,elapsedMs:20,path:join(app.runtimeDataDir,'audio','a'.repeat(64)+'.wav')})
+ const settings={patch:{llm:{timeoutMs:10000,thinking:'disabled',fallbacks:[{baseUrl:'https://backup.test/v1',model:'backup',keyName:'fallbackKey4'}]},tts:{provider:'tencent',timeoutMs:5000,fallbacks:[{slot:4,provider:'tencent',voice:'501001',speed:1,usePrimaryCredentials:true}]}},secrets:{fallbackKey4:'fixture-model-backup-secret',ttsFallbackSecretId4:'fixture-voice-id',ttsFallbackSecretKey4:'fixture-voice-secret'}}
+ const headers={Cookie:cookie,'Content-Type':'application/json','X-Studio-Project':app.projects.activeId}
+ const saved=await request('/api/config',{method:'PUT',headers,body:JSON.stringify(settings)});assert.equal(saved.status,200)
+ const text=await saved.text();assert.ok(!text.includes('fixture-'));assert.equal(app.store.secret('ttsFallbackSecretKey4'),'fixture-voice-secret')
+ const options={method:'POST',headers,body:JSON.stringify({kind:'speech',route:1})}
+ assert.equal((await request('/api/providers/test',{...options,headers:{'Content-Type':'application/json'}})).status,401)
+ const response=await request('/api/providers/test',options);assert.equal(response.status,200);const result=await response.json();assert.equal(result.path,undefined);assert.equal(result.audioUrl,'/assets/audio/'+'a'.repeat(64)+'.wav');assert.doesNotMatch(JSON.stringify(result),/studio-api-/)
+ assert.equal((await request('/api/providers/test',{...options,headers:{...headers,'X-Studio-Project':'stale-project'}})).status,409)
+ assert.throws(()=>app.store.update({tts:{fallbacks:[{slot:1,provider:'openai',voice:'alloy',baseUrl:'https://other.test/v1',speed:1,usePrimaryCredentials:true}]}}),/仅腾讯云/)
+ assert.throws(()=>app.store.update({llm:{timeoutMs:0}}),/超时/)
+ assert.throws(()=>app.store.update({tts:{fallbacks:[{slot:1,provider:'tencent',voice:'501001',speed:1,usePrimaryCredentials:false},{slot:1,provider:'tencent',voice:'602003',speed:1,usePrimaryCredentials:false}]}}),/通道无效/)
+})
+test('voice audition is private, project-bound and returns a named audio URL without saving draft configuration',async t=>{
+ const {app,request,cookie}=await fixture(t),before=app.store.get(),calls=[]
+ app.providers.previewSpeech=async data=>{calls.push(data);return {voice:data.voice,voiceName:'云小团',slot:data.slot,elapsedMs:10,path:join(app.runtimeDataDir,'audio','b'.repeat(64)+'.wav')}}
+ const headers={Cookie:cookie,'Content-Type':'application/json','X-Studio-Project':app.projects.activeId},body=JSON.stringify({slot:0,voice:'402001',speed:1,text:'试听。',provider:'tencent'})
+ assert.equal((await request('/api/providers/preview',{method:'POST',headers:{'Content-Type':'application/json'},body})).status,401)
+ assert.equal((await request('/api/providers/preview',{method:'POST',headers:{...headers,'X-Studio-Project':'stale-scene'},body})).status,409)
+ assert.equal(calls.length,0)
+ const response=await request('/api/providers/preview',{method:'POST',headers,body});assert.equal(response.status,200);const result=await response.json()
+ assert.equal(result.voiceName,'云小团');assert.equal(result.audioUrl,'/assets/audio/'+'b'.repeat(64)+'.wav');assert.equal(result.path,undefined);assert.deepEqual(app.store.get(),before)
+ for(const data of [{slot:5,voice:'402001'},{slot:0,voice:'402001',baseUrl:'https://unexpected.test'}])assert.equal((await request('/api/providers/preview',{method:'POST',headers,body:JSON.stringify(data)})).status,400)
+ assert.equal((await request(result.audioUrl)).status,401)
+})
+test('the prompt viewer returns actual saved stage instructions only to administrators without exposing provider secrets',async t=>{
+ const {app,request,cookie}=await fixture(t)
+ app.store.update({identity:{systemPrompt:'当前保存的人格提示词。',welcome:'这是保存的欢迎词。'},live:{pageSeconds:25,commentSeconds:9,engagementPrompt:'围绕刚讲的例子提问。'}})
+ app.store.setSecrets({llmKey:'fixture-prompt-viewer-private-key'})
+ assert.equal((await request('/api/prompts')).status,401)
+ const response=await request('/api/prompts',{headers:{Cookie:cookie}}),data=await response.json()
+ assert.equal(response.status,200);assert.ok(data.system.startsWith('当前保存的人格提示词。'))
+ assert.match(data.stages.find(stage=>stage.id==='source').instruction,/25秒/);assert.match(data.stages.find(stage=>stage.id==='comment').instruction,/9秒/)
+ assert.match(data.stages.find(stage=>stage.id==='engagement').instruction,/围绕刚讲的例子提问/)
+ assert.equal(data.stages.find(stage=>stage.id==='opening').instruction,'这是保存的欢迎词。');assert.equal(data.stages.find(stage=>stage.id==='lottery').mode,'fixed')
+ assert.ok(!JSON.stringify(data).includes('fixture-prompt-viewer-private-key'))
 })
 test('render tokens grant only scene and asset reads, never administrator APIs',async t=>{
  const {app,request}=await fixture(t),headers={'X-Render-Token':app.media.options.renderToken}
@@ -81,4 +133,16 @@ test('closing an app with live SSE subscribers removes event listeners before sh
  const response=await fetch(app.baseUrl+'/api/events',{headers:{Cookie:cookie}}),reader=response.body.getReader()
  await reader.read();assert.equal(app.events.listenerCount('event'),1)
  await app.close();assert.equal(app.events.listenerCount('event'),0);await reader.cancel()
+})
+
+
+test('authenticated manual page actions are accepted while AI speech is playing',async t=>{
+ const {app,request,cookie}=await fixture(t),directions=[]
+ app.media.openPresentation=async()=>{}
+ app.director.status=()=>({running:true,paused:false})
+ app.director.navigatePresentation=async direction=>{directions.push(direction)}
+ for(const [action,direction]of [['presentation.next','next'],['presentation.prev','prev'],['presentation.first','first']]){
+  const r=await request('/api/action',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({action})})
+  assert.equal(r.status,200);assert.equal(directions.at(-1),direction)
+ }
 })
